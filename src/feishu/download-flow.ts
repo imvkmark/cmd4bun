@@ -543,7 +543,7 @@ export function buildFrontmatter(
     const desc = stripAngleBrackets(escapeYamlSingleQuoted(description));
     const updated = stripAngleBrackets(escapeYamlSingleQuoted(updatedAt));
     const url = aimUrl
-        ? stripAngleBrackets(escapeYamlSingleQuoted(`${aimUrl.replace(/\/+$/, '')}/${slug}.html`))
+        ? stripAngleBrackets(escapeYamlSingleQuoted(`${aimUrl.replace(/\/+$/, '')}/${slug.replace(/^\/+/, '')}.html`))
         : '';
 
     const lines: string[] = ['---'];

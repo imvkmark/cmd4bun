@@ -63,6 +63,20 @@ describe('buildFrontmatter', () => {
         expect(result).toContain("content: 'https://docs.example.com/my-slug.html'");
     });
 
+    test('slug 含前导斜杠时应被剥离,避免 og:url 出现 //', () => {
+        // 实际场景:slug 形如 /wr-1.x/module/index 来自飞书页面路径
+        // aimUrl 末尾与 slug 头部各有一个 /,拼接时若不去重会产生 https://host//path.html
+        const result = buildFrontmatter('T', '/wr-1.x/module/index', 'desc', '2026-04-07 14:31:49', 'https://weiran.tech');
+        expect(result).toContain("content: 'https://weiran.tech/wr-1.x/module/index.html'");
+        expect(result).not.toMatch(/weiran\.tech\/\//);
+    });
+
+    test('aimUrl 带尾部斜杠 + slug 带前导斜杠:两者去重后单 /', () => {
+        const result = buildFrontmatter('T', '/wr-1.x/module/index', 'desc', '2026-04-07 14:31:49', 'https://weiran.tech/');
+        expect(result).toContain("content: 'https://weiran.tech/wr-1.x/module/index.html'");
+        expect(result).not.toMatch(/weiran\.tech\/\//);
+    });
+
     test('og:url 行应在 aimUrl 为空时被跳过', () => {
         const result = buildFrontmatter('测试文档标题', 'slug-c', 'desc', '2026-04-07 14:31:49', '');
         expect(result).not.toContain('og:url');
