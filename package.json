@@ -4,16 +4,18 @@
   "type": "module",
   "private": true,
   "bin": {
-    "cmd.commit": "./src/git-commit.ts",
+    "cmd.check": "./src/check.ts",
+    "cmd.commit": "./src/commit.ts",
     "cmd.feishu": "./src/feishu.ts",
     "cmd.skills": "./src/skills.ts"
   },
   "scripts": {
-    "build": "bun run build:commit && bun run build:feishu && bun run build:skills && rm -f .*.bun-build",
-    "build:commit": "bun build ./src/git-commit.ts --compile --outfile ./bin/cmd.commit",
+    "build": "bun run build:check && bun run build:commit && bun run build:feishu && bun run build:skills && rm -f .*.bun-build",
+    "build:check": "bun build ./src/check.ts --compile --outfile ./bin/cmd.check",
+    "build:commit": "bun build ./src/commit.ts --compile --outfile ./bin/cmd.commit",
     "build:feishu": "bun build ./src/feishu.ts --compile --outfile ./bin/cmd.feishu",
     "build:skills": "bun build ./src/skills.ts --compile --outfile ./bin/cmd.skills",
-    "start": "bun run src/git-commit.ts",
+    "start": "bun run src/commit.ts",
     "feishu": "bun run src/feishu.ts",
     "lint": "eslint"
   },

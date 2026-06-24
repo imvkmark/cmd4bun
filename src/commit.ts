@@ -4,8 +4,8 @@ import { execFileSync, execSync } from 'child_process';
 import { loadConfig, resolveToken, getConfigPath } from './config';
 import { chat } from './shared/deepseek-client';
 import { C } from './shared/colors';
-import { printFileTree } from './git-commit/tree';
-import { selectFiles, selectAction } from './git-commit/selector';
+import { printFileTree } from './commit/tree';
+import { selectFiles, selectAction } from './commit/selector';
 
 // ============ Gitignore 建议 ============
 

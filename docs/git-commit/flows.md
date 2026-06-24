@@ -24,7 +24,7 @@ selectAction() 循环                → 用户选择 Accept / Modify / Regenera
 ```mermaid
 sequenceDiagram
     participant User as 用户
-    participant CLI as cmd-git-commit
+    participant CLI as cmd-commit
     participant Git as Git CLI
     participant AI as DeepSeek API
 

@@ -296,7 +296,8 @@ export async function processImagesInFile(
     db: Database,
     ossConfig: OssClientConfig | null,
     waitForSlot: () => Promise<void>,
-    nodeToken: string
+    nodeToken: string,
+    onProgress?: (current: number, total: number) => void
 ): Promise<{ processed: number; failed: number; failures: ImageFailure[] }> {
     const content = await Bun.file(filePath).text();
     const imageUrls = extractImageUrls(content);
@@ -366,6 +367,8 @@ export async function processImagesInFile(
                 reason: e instanceof Error ? e.message : String(e)
             });
         }
+
+        onProgress?.(processed + failed, imageUrls.length);
     }
 
     if (processed > 0) {

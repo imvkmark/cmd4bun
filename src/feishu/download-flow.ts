@@ -59,7 +59,7 @@ async function processDocContent(
     let unresolvedRefCount = 0;
 
     // 解析 <cite> 引用块为 Markdown 链接（独立于 slug，即使无 slug 的文档也需解析引用）
-    const citeResolveLink = (docId: string): ResolveLinkResult | null => {
+    const citeResolveLink = (docId: string): ResolveLinkResult => {
         const refNode = getNode(db, docId);
         if (refNode === null) return { reason: 'doc-id 未在索引中找到，请先运行 sync' };
         if ((refNode.obj_type === 'sheet' || refNode.obj_type === 'file') && refNode.upload_url !== null) {
@@ -97,7 +97,7 @@ async function processDocContent(
     // - obj_token 在 DB 但 human_path/upload_url 未就绪 → incrementNodePriority 把它提前到队列前端(解析失败但能补救)
     // - obj_token 不在 DB → 无法 bump(nodes 表无对应行,UPDATE 影响 0 行,补不回来);
     //   此时 resolveSubPageListBlocks 仍会保留原文 + 警告,提示作者先跑 sync 把被引节点写进索引
-    const subPageResolveLink = (objToken: string): ResolveLinkResult | null => {
+    const subPageResolveLink = (objToken: string): ResolveLinkResult => {
         const refNode = getNodeByObjToken(db, objToken);
         if (refNode === null) return { reason: 'doc-id 未在索引中找到，请先运行 sync' };
         if ((refNode.obj_type === 'sheet' || refNode.obj_type === 'file') && refNode.upload_url !== null) {

@@ -7,3 +7,4 @@ export { findMdFiles, cleanupEmptyDirs } from './files';
 export { toDatetime, formatUpdatedAt } from './datetime';
 export { parseFrontmatterMeta, parseAndStripFrontmatter, extractHeadings, extractBodyPreview, parseHtmlAttrs } from './markdown';
 export { resolveCiteBlocks, resolveCalloutBlocks, resolveSubPageListBlocks } from './blocks';
+export type { ResolveLinkResult } from './blocks';

@@ -8,7 +8,7 @@ AI 辅助 Git 提交信息生成与交互式文件暂存工具，负责展示仓
 
 | 模块 | 职责 |
 |------|------|
-| `git-commit.ts` | CLI 入口：文件变更收集、树形展示、AI 提交信息生成、交互式菜单与文件多选、提交执行 |
+| `commit.ts` | CLI 入口：文件变更收集、树形展示、AI 提交信息生成、交互式菜单与文件多选、提交执行 |
 | `config.ts` | XDG 配置文件加载（config.json）、token 解析（环境变量优先） |
 | `shared/colors.ts` | ANSI 终端颜色常量 |
 
@@ -25,8 +25,8 @@ AI 辅助 Git 提交信息生成与交互式文件暂存工具，负责展示仓
 
 | 命令 | 说明 |
 |------|------|
-| `bun run src/git-commit.ts` | 完整流程：展示变更 -> 生成 message -> 文件选择 -> 提交 |
-| `bun build ./src/git-commit.ts --compile --outfile ./bin/cmd.commit` | 编译为独立二进制，输出到 `bin/cmd.commit` |
+| `bun run src/commit.ts` | 完整流程：展示变更 -> 生成 message -> 文件选择 -> 提交 |
+| `bun build ./src/commit.ts --compile --outfile ./bin/cmd.commit` | 编译为独立二进制，输出到 `bin/cmd.commit` |
 
 ## 配置
 
