@@ -91,12 +91,12 @@ export function resolveCalloutBlocks(content: string): string {
         /<callout\s+emoji="([^"]*)">/g,
         (_match, emoji: string) => {
             const type = emojiTypeMap[emoji] ?? 'info';
-            return `::: ${type} ${emoji}`;
+            return `::: ${type} ${emoji}\n`;
         }
     );
 
     // 替换结尾（同时处理前置 </aside>）
-    result = result.replace(/<\/callout>/g, ':::');
+    result = result.replace(/<\/callout>/g, '\n:::');
 
     return result;
 }
