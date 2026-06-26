@@ -1,6 +1,7 @@
 // 飞书工具函数单元测试
 import { test, expect, describe } from 'bun:test';
 import { toDatetime, extractHeadings, extractBodyPreview, formatUpdatedAt, parseAndStripFrontmatter, parseFrontmatterMeta, sanitize, xmlToReadable, parseHtmlAttrs, resolveCiteBlocks, resolveSubPageListBlocks } from '../../src/feishu/utils';
+import type { ResolveLinkResult } from '../../src/feishu/utils';
 
 // ============ toDatetime ============
 
@@ -618,7 +619,10 @@ describe('parseHtmlAttrs', () => {
 
 describe('resolveCiteBlocks', () => {
     const mockResolveLink = (map: Record<string, string | null>) =>
-        (docId: string): string | null => map[docId] ?? null;
+        (docId: string): ResolveLinkResult => {
+            const path = map[docId] ?? null;
+            return path ? { path } : { reason: 'doc-id 未在索引中找到，请先运行 sync' };
+        };
 
     test('type=doc file-type=wiki 命中应替换为 Markdown 链接', () => {
         const content = '正文 <cite doc-id="abc123" file-type="wiki" title="测试文档" type="doc"></cite> 结尾';
@@ -730,11 +734,11 @@ describe('resolveCiteBlocks', () => {
         expect(warnings[0]!).toContain('bad');
     });
 
-    test('human_path 为 null 应返回 null 使 cite 保留', () => {
-        // resolveLink 在 human_path 为 null 时返回 null
-        const resolveLink = (docId: string) => {
-            if (docId === 'null-path') return null;
-            return 'some/path';
+    test('human_path 为 null 应返回 reason 使 cite 保留', () => {
+        // resolveLink 在 human_path 为 null 时返回 { reason }
+        const resolveLink = (docId: string): ResolveLinkResult => {
+            if (docId === 'null-path') return { reason: 'human_path is null' };
+            return { path: 'some/path' };
         };
         const content = '<cite doc-id="null-path" file-type="wiki" title="空路径" type="doc"></cite>';
         const { result, warnings } = resolveCiteBlocks(content, resolveLink);
@@ -747,7 +751,10 @@ describe('resolveCiteBlocks', () => {
 
 describe('resolveSubPageListBlocks', () => {
     const mockResolveLink = (map: Record<string, string | null>) =>
-        (docId: string): string | null => map[docId] ?? null;
+        (docId: string): ResolveLinkResult => {
+            const path = map[docId] ?? null;
+            return path ? { path } : { reason: 'doc-id 未在索引中找到，请先运行 sync' };
+        };
 
     test('多个 sub-page 全部命中应输出完整 Markdown 无序列表', () => {
         const content = '<sub-page-list space-id="s1" wiki-token="w1">'

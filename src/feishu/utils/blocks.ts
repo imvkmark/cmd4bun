@@ -3,6 +3,9 @@
 
 import { parseHtmlAttrs } from './markdown';
 
+/** resolveLink 回调的返回值 */
+export type ResolveLinkResult = { path: string } | { reason: string };
+
 /**
  * 解析内容中的 <cite> 引用块，将 Wiki 文档引用替换为 Markdown 链接。
  *
@@ -14,11 +17,11 @@ import { parseHtmlAttrs } from './markdown';
  * 降级路径（均保留原文 + warning）：
  * - type 不是 'doc' 或 file-type 不是 'wiki' → 当前不解析，提示后续按需扩展
  * - 缺 doc-id 属性 → 提示作者补齐
- * - resolveLink 返回 null（节点缺失 / human_path 未就绪） → 提示检查索引或重跑 sync
+ * - resolveLink 返回 { reason }（节点缺失 / human_path 未就绪） → 提示检查索引或重跑 sync
  */
 export function resolveCiteBlocks(
     content: string,
-    resolveLink: (docId: string) => string | null
+    resolveLink: (docId: string) => ResolveLinkResult
 ): { result: string; warnings: string[] } {
     const warnings: string[] = [];
 
@@ -49,13 +52,13 @@ export function resolveCiteBlocks(
                 return match;
             }
 
-            const humanPath = resolveLink(docId);
-            if (!humanPath) {
-                warnings.push(`<cite> 引用的文档未找到 (doc-id=${docId}, title="${title}")`);
+            const linkResult = resolveLink(docId);
+            if ('reason' in linkResult) {
+                warnings.push(`<cite> ${linkResult.reason} (doc-id=${docId}, title="${title}")`);
                 return match;
             }
 
-            return `[${title}](${humanPath}.md)`;
+            return `[${title}](${linkResult.path}.md)`;
         }
     );
 
@@ -114,7 +117,7 @@ export function resolveCalloutBlocks(content: string): string {
  * - file-type=sheet|file 命中 → `- [title](upload_url)`（直出，不加 .md）
  * - 缺 doc-id → 保留原文 + warning
  * - file-type 非 docx/sheet/file → 保留原文 + warning（提示作者检查是否为支持类型）
- * - resolveLink 返回 null → 保留原文 + warning
+ * - resolveLink 返回 { reason } → 保留原文 + warning
  *
  * 块级处理：
  * - 至少 1 个子项产出（命中或降级保留）→ 输出 join('\n') 的列表
@@ -126,7 +129,7 @@ export function resolveCalloutBlocks(content: string): string {
  */
 export function resolveSubPageListBlocks(
     content: string,
-    resolveLink: (docId: string) => string | null
+    resolveLink: (docId: string) => ResolveLinkResult
 ): { result: string; warnings: string[] } {
     const warnings: string[] = [];
 
@@ -161,13 +164,13 @@ export function resolveSubPageListBlocks(
                     }
 
                     const link = resolveLink(docId);
-                    if (link === null) {
-                        warnings.push(`<sub-page> 引用的节点未找到 (doc-id=${docId}, title="${title}")`);
+                    if ('reason' in link) {
+                        warnings.push(`<sub-page> ${link.reason} (doc-id=${docId}, title="${title}")`);
                         lines.push(`- ${itemMatch}`);
                         return itemMatch;
                     }
 
-                    const path = fileType === 'docx' ? `${link}.md` : link;
+                    const path = fileType === 'docx' ? `${link.path}.md` : link.path;
                     lines.push(`- [${title}](${path})`);
                     meaningfulCount++;
                     return itemMatch;
