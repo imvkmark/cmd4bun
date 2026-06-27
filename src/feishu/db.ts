@@ -152,7 +152,7 @@ export function getDownloadQueue(db: Database, spaceIds: string[], force: boolea
     const placeholders = spaceIds.map(() => '?').join(',');
     const allNodes = db.query(
         `SELECT * FROM nodes WHERE space_id IN (${placeholders}) AND obj_type IN ('doc', 'docx', 'file', 'sheet')
-         ORDER BY parent_node_token DESC,
+         ORDER BY parent_node_token ASC,
                   CASE WHEN downloaded_at IS NULL THEN 0 ELSE 1 END ASC,
                   priority DESC,
                   node_token ASC`

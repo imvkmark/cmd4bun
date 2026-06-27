@@ -1,6 +1,6 @@
 // 飞书 Wiki API 调用：知识库扫描、节点遍历、文档内容获取
 
-import { execJSON, execJSONAsync, xmlToReadable, createRateLimiter, writeProgress, sanitize, extractHeadings, extractBodyPreview, FeishuAPIError } from './utils';
+import { execJSON, execJSONAsync, xmlToReadable, createRateLimiter, writeProgress, sanitize, extractHeadings, extractBodyPreview, convertDocumentTitleToHeading, FeishuAPIError } from './utils';
 import { loadConfig } from '../config';
 import { chat } from '../shared/deepseek-client';
 import { C } from '../shared/colors';
@@ -138,7 +138,9 @@ export async function fetchDocContent(objToken: string, waitForDownloadSlot: () 
         if (data) {
             const content
                 = data.document?.content ?? data.markdown ?? data.content ?? data.raw_content;
-            if (content) return content;
+            // docs_ai API 在 markdown 顶部嵌入 `<title>{文档标题}</title>` 行,
+            // 这是 API 产物而非文档内容,改写为一级标题避免字面落到 .md 文件里
+            if (content) return convertDocumentTitleToHeading(content);
         }
     } catch {
     // fallback

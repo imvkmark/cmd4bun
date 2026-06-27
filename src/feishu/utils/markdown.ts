@@ -166,6 +166,28 @@ export function extractBodyPreview(markdown: string, maxLen: number): string {
 }
 
 /**
+ * 把飞书 docs_ai API 返回内容顶部的 `<title>...</title>` 行改写为一级 Markdown 标题。
+ *
+ * 该 API 转换文档时会将文档标题作为首行嵌入 markdown，格式为
+ * `<title>{文档标题}</title>`，与正文以空行分隔。这个标签是 API 产物，
+ * 不是文档内容；若原样写入 .md 会显示成 `<title>⚠️ MgrApp</title>` 字面文本。
+ *
+ * 这里把它改写成 `# {文档标题}`，与正文其余部分保持一致的 Markdown 结构，
+ * 避免依赖写入端的模板/注入逻辑（documentTitle 不一定注入到了正文）。
+ *
+ * 只改写"开头"的标题行（容许前导空白），不动正文里的 `<title>` 标签——
+ * 后者通常是 HTML 代码块示例（如 favicon 文档里 `<head><title>...</title></head>`）。
+ *
+ * 标题内容用 `[^<]*` 限定不含 `<`，避免贪婪匹配跨过真实标签边界。
+ */
+export function convertDocumentTitleToHeading(content: string): string {
+    return content.replace(
+        /^(\s*)<title>([^<]*)<\/title>\s*\n?/,
+        (_match, _leadingWs: string, title: string) => `# ${title}\n\n`
+    );
+}
+
+/**
  * 解析 HTML 标签属性字符串为键值对。
  * 例：'doc-id="abc" title="Hello World"' → { 'doc-id': 'abc', title: 'Hello World' }
  */

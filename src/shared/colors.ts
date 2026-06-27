@@ -1,4 +1,4 @@
-// 共享 ANSI 终端颜色常量，feishu 和 git-commit 共用
+// 共享 ANSI 终端颜色常量，feishu 和 commit 共用
 
 export const C = {
     reset: '\x1b[0m',

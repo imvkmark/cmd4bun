@@ -1,4 +1,4 @@
-// 共享 DeepSeek API 客户端，git-commit 和 feishu 模块共用
+// 共享 DeepSeek API 客户端，commit 和 feishu 模块共用
 
 import type { DeepseekConfig } from '../config';
 

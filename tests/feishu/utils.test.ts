@@ -1,6 +1,6 @@
 // 飞书工具函数单元测试
 import { test, expect, describe } from 'bun:test';
-import { toDatetime, extractHeadings, extractBodyPreview, formatUpdatedAt, parseAndStripFrontmatter, parseFrontmatterMeta, sanitize, xmlToReadable, parseHtmlAttrs, resolveCiteBlocks, resolveSubPageListBlocks } from '../../src/feishu/utils';
+import { toDatetime, extractHeadings, extractBodyPreview, formatUpdatedAt, parseAndStripFrontmatter, parseFrontmatterMeta, sanitize, xmlToReadable, parseHtmlAttrs, resolveCiteBlocks, resolveSubPageListBlocks, convertDocumentTitleToHeading } from '../../src/feishu/utils';
 import type { ResolveLinkResult } from '../../src/feishu/utils';
 
 // ============ toDatetime ============
@@ -576,6 +576,30 @@ test('xmlToReadable collapses excessive newlines', () => {
 
 test('xmlToReadable handles empty input', () => {
     expect(xmlToReadable('')).toBe('');
+});
+
+// ============ convertDocumentTitleToHeading ============
+
+describe('convertDocumentTitleToHeading', () => {
+    test('顶部 <title> 行改写为一级标题（带 emoji 标题）', () => {
+        const input = '<title>⚠️ MgrApp</title>\n\n::: warning ⚠️\n前后端分离\n:::';
+        expect(convertDocumentTitleToHeading(input)).toBe('# ⚠️ MgrApp\n\n::: warning ⚠️\n前后端分离\n:::');
+    });
+
+    test('标题前有空白也能改写', () => {
+        const input = '  \n<title>Foo</title>\n\n正文';
+        expect(convertDocumentTitleToHeading(input)).toBe('# Foo\n\n正文');
+    });
+
+    test('无 <title> 行时原样返回', () => {
+        const input = '# 标题\n\n正文';
+        expect(convertDocumentTitleToHeading(input)).toBe(input);
+    });
+
+    test('正文里的 <title>（HTML 代码块示例）不应被改写', () => {
+        const input = '# favicon\n\n```html\n<head><title>Empty Icon Test</title></head>\n```\n';
+        expect(convertDocumentTitleToHeading(input)).toBe(input);
+    });
 });
 
 // ============ parseHtmlAttrs ============
