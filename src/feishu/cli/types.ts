@@ -27,7 +27,12 @@ export interface CopyDocsArgs extends CommonArgs {
     group: string;
 }
 
-export type CommandName = 'sync' | 'download' | 'copy-docs' | 'init-db' | 'sync-updated-at' | 'help';
+/** diff-with 命令专属参数:可选 group 名,空串表示 fan-out 所有 group */
+export interface DiffWithArgs extends CommonArgs {
+    group: string;
+}
+
+export type CommandName = 'sync' | 'download' | 'copy-docs' | 'init-db' | 'sync-updated-at' | 'diff-with' | 'help';
 
 /**
  * 解析后的命令结果。`command` 决定 `args` 的具体类型，
@@ -39,5 +44,6 @@ export type ParsedCommand
         | { command: 'copy-docs'; args: CopyDocsArgs }
         | { command: 'init-db'; args: CommonArgs }
         | { command: 'sync-updated-at'; args: SyncUpdatedAtArgs }
+        | { command: 'diff-with'; args: DiffWithArgs }
         | { command: 'help'; args: CommonArgs }
         | { command: null; args: CommonArgs };

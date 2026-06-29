@@ -5,6 +5,6 @@ export { execJSON, execJSONAsync, FeishuAPIError } from './shell';
 export { xmlToReadable } from './xml';
 export { findMdFiles, cleanupEmptyDirs } from './files';
 export { toDatetime, formatUpdatedAt } from './datetime';
-export { parseFrontmatterMeta, parseAndStripFrontmatter, extractHeadings, extractBodyPreview, parseHtmlAttrs, convertDocumentTitleToHeading } from './markdown';
+export { parseFrontmatterMeta, parseAndStripFrontmatter, parseFrontmatterTitle, extractHeadings, extractBodyPreview, parseHtmlAttrs, convertDocumentTitleToHeading } from './markdown';
 export { resolveCiteBlocks, resolveCalloutBlocks, resolveSubPageListBlocks } from './blocks';
 export type { ResolveLinkResult } from './blocks';

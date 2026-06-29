@@ -2,6 +2,9 @@
 
 const YAML_BLOCK_RE = /```(?:ya?ml|YAML|YML)\s*\n([\s\S]*?)```/;
 
+/** frontmatter 块:`--- ... ---` 在文件开头(可前导空行) */
+const FRONTMATTER_RE = /^[ \t]*---\s*\n([\s\S]*?)\n[ \t]*---/;
+
 /** group 字段校验规则:仅允许小写字母、数字、连字符 */
 const GROUP_RE = /^[a-z0-9-]+$/;
 
@@ -53,6 +56,44 @@ export function parseFrontmatterMeta(content: string): { slug: string | null; ig
     const group = normalizeGroup(groupMatch?.[1]);
 
     return { slug, ignore, group };
+}
+
+/**
+ * 从 Markdown 内容的首个 `--- ... ---` frontmatter 块中提取 `og:title` 的 content。
+ *
+ * 与 `parseFrontmatterMeta` 不同:download-flow:buildFrontmatter 输出的 frontmatter
+ * 不暴露直接的 `title:` 字段,而是把标题埋在 `head: [og:title]` 嵌套结构里:
+ * ```
+ * ---
+ * description: '...'
+ * lastUpdated: '...'
+ * head:
+ *   - - meta
+ *     - name: 'og:title'
+ *       content: 'My Title'
+ *   - - meta
+ *     - name: 'og:type'
+ *       content: 'article'
+ * ---
+ * ```
+ *
+ * 适用场景:diff-with 阶段需要按 title 反查 DB,无需 slug/ignore/group 三个字段。
+ *
+ * 返回:trim + YAML 单引号反转义后的 title;缺失/为空/无 frontmatter 块 → null。
+ */
+export function parseFrontmatterTitle(content: string): string | null {
+    const fmMatch = FRONTMATTER_RE.exec(content);
+    if (!fmMatch?.[1]) return null;
+
+    // 在 frontmatter 块内,匹配 `name: 'og:title'` 之后紧跟的 `content: 'X'`
+    // 注意:值用单引号包裹,内部 ' 通过 '' 转义(YAML 单引号字符串规则)
+    const ogTitleRe = /name:\s*'og:title'\s*\n\s*content:\s*'((?:[^']|'')*)'/m;
+    const m = ogTitleRe.exec(fmMatch[1]);
+    if (!m) return null;
+
+    // 反转义 YAML 单引号:'' → '
+    const unescaped = m[1]!.replace(/''/g, "'").trim();
+    return unescaped ? unescaped : null;
 }
 
 /**

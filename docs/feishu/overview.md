@@ -8,13 +8,16 @@
 
 | 模块 | 职责 |
 |------|------|
-| `feishu.ts` | CLI 入口：参数解析、子命令路由（init-db / sync / sync-updated-at / download / copy-docs） |
+| `feishu.ts` | CLI 入口：参数解析、子命令路由（init-db / sync / sync-updated-at / download / copy-docs / diff-with） |
 | `feishu/api.ts` | 飞书 Wiki API 调用：知识库扫描、节点 BFS 遍历、文档内容获取、节点元数据查询、DeepSeek 描述生成 |
 | `feishu/db.ts` | SQLite 数据库操作：spaces / nodes / images 三张表的 CRUD、连接管理、数据库迁移跟踪 |
 | `feishu/init-db-flow.ts` | 数据库迁移执行器：按序执行 SQL 迁移文件，通过 _migrations 表保证幂等 |
 | `feishu/sync-flow.ts` | 索引同步流程：知识库元数据扫描 + 节点级孤儿清理（diff 本次扫描 vs DB）+ 过期本地文档清理（不再负责 updated_at 获取） |
 | `feishu/sync-updated-at-flow.ts` | 编辑时间批量更新流程：从 DB 查询节点队列并发调用 API 获取并写入 updated_at |
 | `feishu/download-flow.ts` | 文档下载流程：并发下载 + 断点续传（基于 updated_at），默认自动处理图片（下载/去重/上传 OSS/URL 替换/节点级 diff）+ 末尾全局孤儿兜底 |
+| `feishu/copy-docs-flow.ts` | 已下载文档复制：按 group 分发到 `feishu.{group}.aimDirectory`，目标文件名 `human_path.md` |
+| `feishu/diff-with-flow.ts` | 目标目录孤儿副本检测：按 `human_path` 反查 DB，列出两类孤儿（只读） |
+| `feishu/aim-dir.ts` | `aimDirectory` 解析共享 helper：按 group 名 → fallback 到 default，copy-docs 与 diff-with 共用 |
 | `feishu/images.ts` | 图片处理核心：URL 提取、下载、MD5 去重、OSS 上传、Markdown 链接替换、全局孤儿扫描 |
 | `feishu/utils.ts` | 工具函数：Shell 封装、XML→文本转换、文件遍历、限流器、进度输出、时间格式化、Markdown 标题提取与正文预览 |
 | `feishu/migrations/` | 数据库迁移 SQL 文件（001_initial.sql ~ 010_split_images.sql） |
@@ -39,6 +42,7 @@
 | `bun run src/feishu.ts sync-updated-at` | 批量更新节点编辑时间（updated_at） |
 | `bun run src/feishu.ts download` | 根据索引下载文档内容（自动处理图片：下载/去重/上传 OSS/URL 替换/节点级 diff） |
 | `bun run src/feishu.ts copy-docs` | 复制已上传图片的文档到归档目录 |
+| `bun run src/feishu.ts diff-with <group>` | 列出指定 group 目标目录中的孤儿副本（三级判定 + 飞书 URL） |
 
 ## 构建后的命令
 
@@ -50,6 +54,7 @@ cmd.feishu sync-updated-at
 cmd.feishu download
 cmd.feishu download --node-token <node_token>
 cmd.feishu copy-docs
+cmd.feishu diff-with <group>     # group 是必填位置参数
 ```
 
 ## API 依赖

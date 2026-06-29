@@ -6,8 +6,7 @@ out
 dist
 *.tgz
 bin
-feishu-docs
-feishu-sync-docs
+sync-feishu
 
 # AI
 .omc
@@ -35,6 +34,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 *.tsbuildinfo
 *.bun-build
 bun.lock
+*.zip
 
 # IntelliJ based IDEs
 .idea

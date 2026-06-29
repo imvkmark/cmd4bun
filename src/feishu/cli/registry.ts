@@ -7,8 +7,9 @@ import { runDownload } from '../download-flow';
 import { runCopyDocs } from '../copy-docs-flow';
 import { runInitDB } from '../init-db-flow';
 import { runSyncUpdatedAt } from '../sync-updated-at-flow';
+import { runDiffWith } from '../diff-with-flow';
 import type {
-    CommonArgs, CommandName, CopyDocsArgs, DownloadArgs, SyncArgs, SyncUpdatedAtArgs
+    CommonArgs, CommandName, CopyDocsArgs, DiffWithArgs, DownloadArgs, SyncArgs, SyncUpdatedAtArgs
 } from './types';
 
 // ============ Flag 定义 ============
@@ -34,8 +35,24 @@ interface CommandSpec<TArgs> {
     buildArgs: (common: CommonArgs) => TArgs;
     /** 命令专属 flags；通用 --output/--help 由 parser 统一处理 */
     flags: FlagDef<TArgs>[];
+    /**
+     * 命令的位置参数(声明式,parser 自动收集与校验必填性)。
+     * 通用扩展:任何子命令可声明一个必填或可选位置参数,值会注入到 `args[spec.positional.name]`。
+     * 不填时表示该命令无位置参数(只有 flags)。
+     */
+    positional?: PositionalDef<TArgs>;
     /** 真正执行业务逻辑的函数 */
     run: (args: TArgs) => Promise<void> | void;
+}
+
+/** 命令位置参数定义。`name` 对应 TArgs 上的字段名。 */
+interface PositionalDef<TArgs> {
+    /** 位置参数名,对应 TArgs 上的字段(如 'group' → args.group) */
+    name: keyof TArgs & string;
+    /** 是否必填;未传时 parse-args 抛 throw */
+    required: boolean;
+    /** help 文本中的描述 */
+    description?: string;
 }
 
 // ============ Help 文本常量 ============
@@ -93,6 +110,29 @@ ${C.dim}说明:${C.reset}
   不传 --group 时按 DB 中 unique group 串行复制到各自 aimDirectory,缺 aimDirectory 的 group 跳过。
 `;
 
+const DIFF_WITH_HELP = `
+${C.bold}检测孤儿副本${C.reset}
+
+${C.dim}Usage:${C.reset}
+  bun run src/feishu.ts diff-with <group> [options]
+
+${C.dim}参数:${C.reset}
+  <group>                要检测的 group 名(必填,小写 [a-z0-9-]+)
+
+${C.dim}选项:${C.reset}
+  --output, -o <dir>   输出目录 (默认: ./docs/feishu)
+  --help, -h           显示帮助
+
+${C.dim}说明:${C.reset}
+  只读扫描 feishu.{group}.aimDirectory 下的 .md 副本,三级判定后输出清单(只列不删,供用户手动 rm):
+
+    L1 路径+group 命中 DB → 静默(不出现在清单)
+    L2 标题全库匹配       → 列出文件 + 每个匹配节点的飞书 URL
+    L3 无匹配            → 警告(真正需要清理的孤儿)
+
+  飞书 URL 格式:https://feishu.cn/wiki/<node_token>
+`;
+
 const INIT_DB_HELP = `
 ${C.bold}初始化数据库${C.reset}
 
@@ -138,6 +178,7 @@ interface ArgsByCommand {
     'copy-docs': CopyDocsArgs;
     'init-db': CommonArgs;
     'sync-updated-at': SyncUpdatedAtArgs;
+    'diff-with': DiffWithArgs;
     help: CommonArgs;
 }
 
@@ -210,6 +251,21 @@ export const commandSpecs: { [K in CommandName]: CommandSpec<ArgsByCommand[K]> }
             }
         ],
         run: (args: CopyDocsArgs) => runCopyDocs(args)
+    },
+    'diff-with': {
+        name: 'diff-with',
+        summary: '列出 copydocs 目标目录中的孤儿副本',
+        help: DIFF_WITH_HELP,
+        // buildArgs 返回骨架;位置参数由 parse-args 在 return 前注入
+        // (group: '' 是占位,parse-args 必填校验失败时根本走不到这一步)
+        buildArgs: (common: CommonArgs) => ({ ...common, group: '' }),
+        flags: [],
+        positional: {
+            name: 'group',
+            required: true,
+            description: '要检测的 group 名(小写 [a-z0-9-]+,必填)'
+        },
+        run: (args: DiffWithArgs) => runDiffWith(args)
     },
     'init-db': {
         name: 'init-db',

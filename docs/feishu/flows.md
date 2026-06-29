@@ -400,6 +400,66 @@ args.group 是否传入:
 - **--group 严格模式**：显式指定 group 时未配置 aimDirectory 报错退出,避免静默丢失
 - **删除文档时 aimDirectory 定位**：3380003 分支用节点当前 group 查 aimDirectory,fallback 到 default,再找不到跳过副本清理
 
+## 目标目录孤儿副本检测流程 (cmd.feishu diff-with <group>)
+
+```
+┌─────────────────────────────────────────────────────┐
+│          cmd.feishu diff-with <group> (只读)          │
+│                                                     │
+│  预检查                                              │
+│  ┌───────────────────────────────────────┐         │
+│  │ 检查 feishu.db 是否存在                │         │
+│  │   → 不存在则提示先运行 sync            │         │
+│  │ GROUP_VALID_RE 校验 <group>            │         │
+│  │ resolveAimDirectory → 缺则 throw       │         │
+│  └───────────────────────────────────────┘         │
+│                    ↓                                │
+│  扫描 aimDirectory(findMdFiles)                     │
+│                    ↓                                │
+│  对每个 .md 文件三级判定                              │
+│  ┌───────────────────────────────────────┐         │
+│  │ absPathToHumanPath(abs)               │         │
+│  │   → relative + 去 .md + / 标准化       │         │
+│  │ L1: SELECT WHERE human_path = ?       │         │
+│  │      AND "group" = ?                   │         │
+│  │   → 命中 = SILENT (静默)               │         │
+│  │   → 未命中 ↓                           │         │
+│  │ L2: readTitleFromFrontmatter(abs)      │         │
+│  │   → null → WARN "frontmatter 缺失"     │         │
+│  │     + "    slug: /<path>"              │         │
+│  │   → title → 全库匹配                   │         │
+│  │     SELECT node_token, title           │         │
+│  │     FROM nodes WHERE title = ?         │         │
+│  │     → 0 个 → WARN "标题 X 无任何匹配"   │         │
+│  │       + "    ```" + "    slug: /<path>"│         │
+│  │       + "    ```"                      │         │
+│  │     → 1 个 → LIST 主行 + 1 行 URL      │         │
+│  │       + "    ```" + "    slug: /<path>"│         │
+│  │       + "    ```"                      │         │
+│  │     → >=2 个 → LIST 主行 + N 行 URL    │         │
+│  │       ⚠ [group] <slug>.md — 标题 "X"  │         │
+│  │            匹配 N 个:                  │         │
+│  │         ```                            │         │
+│  │         slug: /<path>                  │         │
+│  │         ```                            │         │
+│  │         https://feishu.cn/wiki/...     │         │
+│  └───────────────────────────────────────┘         │
+│                    ↓                                │
+│  汇总:✓ 扫描 N 个文件, 列出 X 个待匹配, 警告 Y 个   │
+└─────────────────────────────────────────────────────┘
+```
+
+### diff-with 关键设计决策
+
+- **三级判定替代单维反查**：v1 单纯按 `human_path` 反查会因作者改 `slug:` 而**大量误报**（实测在真实 aimDirectory 中报出几十个孤儿，但其中大部分只是 slug 改名）。v2 加 title 全库兜底，给出飞书 URL 让用户能直接跳回核对，误报大幅减少
+- **位置参数 group**：强制单 group（不支持 fan-out），CLI 简化 + 语义最清晰；parse-args 通过通用 `CommandSpec.positional` 能力扩展实现
+- **title 跨 group 全库匹配**：不按 group 过滤，让"slug 改名后留在原 group 副本"能定位到其他 group 的同名节点
+- **1 个匹配也输出**：单文件对应单文档可能是"slug 改名后的旧副本"（属于异常），让用户看到后自行判断；统一与 ≥2 同格式输出 title + URL 列表
+- **共享 aimDirectory 解析**：`src/feishu/aim-dir.ts:resolveAimDirectory` 是 `copy-docs` 与 `diff-with` 共用 helper
+- **0 orphan 不静默**：始终打印一行总结，便于脚本判断命令是否跑完
+- **每行一个文件**：便于 `grep` / 脚本消费；L2 匹配的多个 URL 子行独立输出
+- **飞书 URL 硬编码**：`https://feishu.cn/wiki/<node_token>` 依赖 Feishu 跨租户跳转机制，零配置可用
+
 ## 关键设计决策
 
 ### 流程显式分离

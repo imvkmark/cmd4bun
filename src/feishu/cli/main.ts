@@ -36,6 +36,10 @@ async function dispatch(parsed: ParsedCommand): Promise<void> {
             await commandSpecs['sync-updated-at'].run(parsed.args);
             break;
         }
+        case 'diff-with': {
+            await commandSpecs['diff-with'].run(parsed.args);
+            break;
+        }
     }
 }
 

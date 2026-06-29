@@ -1,12 +1,12 @@
-// CLI 通用 parser：识别命令名 → 通用 flag → 命令专属 flag → 未知 flag 报错
-// 不再写每个命令的 if-else 块，注册表里有 flags 数组就够。
+// CLI 通用 parser：识别命令名 → 通用 flag → 命令专属 flag → 位置参数 → 未知 flag 报错
+// 不再写每个命令的 if-else 块，注册表里有 flags / positional 数组就够。
 
 import { resolve } from 'node:path';
 import { C } from '../../shared/colors';
 import { commandSpecs } from './registry';
 import { printHelp } from './help';
 import type {
-    CommonArgs, CommandName, CopyDocsArgs, DownloadArgs,
+    CommonArgs, CommandName, CopyDocsArgs, DiffWithArgs, DownloadArgs,
     ParsedCommand, SyncArgs, SyncUpdatedAtArgs
 } from './types';
 
@@ -16,7 +16,7 @@ const COMMAND_NAMES: ReadonlySet<string> = new Set(Object.keys(commandSpecs));
  * flags.apply 的容器类型：所有命令 args 的联合。
  * 选联合而非 Record 是因为 Record<string, unknown> 与具体 args 接口不兼容（缺少索引签名）。
  */
-type AnyArgs = CommonArgs | SyncArgs | DownloadArgs | SyncUpdatedAtArgs | CopyDocsArgs;
+type AnyArgs = CommonArgs | SyncArgs | DownloadArgs | SyncUpdatedAtArgs | CopyDocsArgs | DiffWithArgs;
 
 export function parseArgs(defaultOutput = './docs/feishu'): ParsedCommand {
     const argv = process.argv.slice(2);
@@ -24,6 +24,8 @@ export function parseArgs(defaultOutput = './docs/feishu'): ParsedCommand {
     let command: CommandName | null = null;
     // 懒构造：第一次遇到命令专属 flag 时才 buildArgs，避免空命令时白构造
     let commandArgs: AnyArgs | null = null;
+    // 位置参数值缓存：到循环结束后才注入到 args[positional.name]
+    let positionalValue: string | undefined;
 
     for (let i = 0; i < argv.length; i++) {
         const arg = argv[i]!;
@@ -63,6 +65,15 @@ export function parseArgs(defaultOutput = './docs/feishu'): ParsedCommand {
             }
         }
 
+        // 位置参数:非 flag 形式,且当前 command 声明了 positional,且尚未收集过
+        if (command) {
+            const spec = commandSpecs[command];
+            if (spec.positional && positionalValue === undefined) {
+                positionalValue = arg;
+                continue;
+            }
+        }
+
         // 未知 flag
         console.error(`  ${C.red}✗${C.reset} 未知参数: ${arg}`);
         printHelp();
@@ -76,6 +87,26 @@ export function parseArgs(defaultOutput = './docs/feishu'): ParsedCommand {
         case 'copy-docs': return { command: 'copy-docs', args: (commandArgs ?? commandSpecs['copy-docs'].buildArgs(common)) as CopyDocsArgs };
         case 'init-db': return { command: 'init-db', args: (commandArgs ?? commandSpecs['init-db'].buildArgs(common)) };
         case 'sync-updated-at': return { command: 'sync-updated-at', args: (commandArgs ?? commandSpecs['sync-updated-at'].buildArgs(common)) as SyncUpdatedAtArgs };
+        case 'diff-with': {
+            const spec = commandSpecs['diff-with'];
+            const args = (commandArgs ?? spec.buildArgs(common)) as DiffWithArgs;
+            // 位置参数校验:声明了 positional 时,值必须在循环里被收集
+            if (spec.positional) {
+                if (positionalValue === undefined) {
+                    if (spec.positional.required) {
+                        console.error(
+                            `  ${C.red}✗${C.reset} 未传入 ${spec.positional.name} 参数\n`
+                            + `  提示: cmd.feishu ${spec.name} ${spec.positional.name}`
+                        );
+                        process.exit(1);
+                    }
+                } else {
+                    // 注入位置参数到对应字段(类型安全:spec.positional.name 是 TArgs 的 key)
+                    (args as unknown as Record<string, string>)[spec.positional.name] = positionalValue;
+                }
+            }
+            return { command: 'diff-with', args };
+        }
         case 'help': return { command: 'help', args: common };
         case null: return { command: 'help', args: common };
     }

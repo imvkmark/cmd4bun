@@ -7,11 +7,12 @@
 // 不传 --group 时 fan-out:取 DB 中 unique group 串行复制到各自 aimDirectory,
 // 缺 aimDirectory 的 group 跳过 + warn。
 
-import { join, dirname, resolve } from 'node:path';
+import { join, dirname } from 'node:path';
 import { mkdirSync, existsSync } from 'node:fs';
 import { C } from '../shared/colors';
 import { getDB, closeDB, getDBPath } from './db';
-import { loadConfig, resolveFeishuGroupConfig } from '../config';
+import { loadConfig } from '../config';
+import { resolveAimDirectory } from './aim-dir';
 import type { CopyDocsArgs } from './cli/types';
 
 /** group 名合法性校验规则,与 frontmatter 解析器一致 */
@@ -85,18 +86,6 @@ async function copyDocsForGroup(
         }
     }
     return stats;
-}
-
-/**
- * 解析单个 group 的 aimDirectory。
- * 优先读 feishu.{group}.aimDirectory,未配置则 fallback 到 feishu.default.aimDirectory。
- * @returns 解析到的绝对路径;都未配置时返回 null
- */
-function resolveAimDirectory(cfg: Awaited<ReturnType<typeof loadConfig>>, group: string): string | null {
-    const groupCfg = resolveFeishuGroupConfig(cfg, group);
-    const raw = groupCfg?.aimDirectory ?? resolveFeishuGroupConfig(cfg, 'default')?.aimDirectory;
-    if (!raw) return null;
-    return resolve(process.cwd(), raw);
 }
 
 export async function runCopyDocs(args: CopyDocsArgs) {

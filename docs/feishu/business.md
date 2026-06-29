@@ -181,6 +181,58 @@ GROUP_RESOLVED → AIM_DIRECTORY_LOOKUP
 - 删除文档（3380003）按节点的 `group` 字段定位 aimDirectory，未配置时跳过 aimDirectory 副本清理（仅清理本地 `.md` + DB 行）
 - sheet/file 节点不解析 `group`（与 `is_ignore` 边界一致）
 
+## 飞书目标目录孤儿副本检测 (diff-with)
+
+`copy-docs` 是单向写入（`Bun.write` 覆盖同名文件，不删旧文件），任何 source 端的状态变化（节点被 `sync` 清掉、`human_path` 改名/清空、文档 `is_ignore=1`、文档换 `group`）都会让 `aimDirectory` 里残留孤儿 `.md` 副本，且**永远不会被自动清理**。`sync-orphan-node-cleanup` 已经为 source 端补齐反向清理路径，但 aimDirectory 一直是盲区。
+
+`cmd.feishu diff-with <group>` 是只读反查工具：扫描 `feishu.{group}.aimDirectory` 下的所有 `.md` 副本，三级判定后输出清单，供用户手动 `rm`。**只列不删**，避免误清。
+
+### 状态机
+
+```text
+LOAD_CONFIG → GROUP_VALID_RE → RESOLVE_AIM_DIR
+                                     ├── null → throw
+                                     └── 命中  → WALK_DIR
+                                                  ↓
+                                            PER_FILE
+                                              ├── L1 (human_path + group 命中) → SILENT
+                                              ├── L1 miss → 读 frontmatter title
+                                              │              ├── null → WARN "frontmatter 缺失"
+                                              │              └── title → 全库匹配
+                                              │                       ├── 0 个 → WARN "无任何匹配"
+                                              │                       └── N 个 → LIST + N 行 URL
+```
+
+### 关键业务规则
+
+- **只读**：不写 DB、不删文件、不调外部 API
+- **group 必填位置参数**：`<group>` 不传则 parse-args 阶段 throw；group 名严格匹配 `[a-z0-9-]+`，非法值 throw
+- **三级判定**：
+  - **L1 路径+group 命中** → 静默（不出现在清单；同时匹配带/不带前导斜杠两种形式，DB 历史写入可能带 `/`）
+  - **L2 标题全库匹配（≥1 都输出）**：
+    - 命中 1 个 → 列出文件 + 1 行 URL（可能是 slug 改名后留在 aimDirectory 的旧副本，让用户自己判断）
+    - 命中 ≥2 个 → 列出文件 + 每个匹配节点一行 URL（同标题多文档是可疑，需要人工核对）
+    - 格式：
+      ```
+      ⚠ [group] <human_path>.md — 标题 "X" 匹配 N 个:
+        \`\`\`yaml
+        slug: /<human_path>           # 带前导斜杠,无 .md 后缀,对应 DB human_path 格式
+        \`\`\`
+        https://feishu.cn/wiki/<token>
+        ...
+      ```
+  - **L3 无匹配** → 警告 `标题 "X" 无任何匹配` + 子行块 `\`\`\`yaml ... slug: /<human_path> ... \`\`\``
+  - **L1 miss + frontmatter title 缺失/空** → 警告"无法按标题反查" + 子行块 `\`\`\`yaml ... slug: /<human_path> ... \`\`\``
+- **title 跨 group 全库匹配**：不按 group 过滤（同标题跨 group 节点都列出），让用户能定位原 group 之外的同名节点
+- **title 读取**：`src/feishu/utils/markdown.ts:parseFrontmatterTitle`，从 `--- ... ---` frontmatter 块的 `head: [og:title] content` 取标题
+- **反查范围**：`aimDirectory` 下的所有 `.md` 文件（含子目录如 `guide/install.md`），排除 `images/` 与 `data/` 子目录（沿用 `findMdFiles` 行为）
+- **0 orphan**：打印一行总结 `✓ 扫描 N 个文件, 列出 X 个待匹配, 警告 Y 个`，不静默退出
+- **退出码**：0（孤儿副本不视为错误）；预检查失败（DB 缺失、group 非法、group 未配置 aimDirectory）非 0
+- **aimDirectory 解析**：复用 `src/feishu/aim-dir.ts:resolveAimDirectory`，与 `copy-docs` 共享 helper
+- **不支持 fan-out**：v2 强制单 group（CLI 设计简化）；未来如需 fan-out 再讨论
+- **不引入 `--group` flag**：v2 位置参数是唯一入参；CLI 破坏性变更（v1 未发布，无用户影响）
+- **飞书 URL**：硬编码 `https://feishu.cn/wiki/<node_token>`，依赖 Feishu 跨租户跳转机制保证可用
+
 ## 飞书可疑标题扫描
 
 ### 状态机
