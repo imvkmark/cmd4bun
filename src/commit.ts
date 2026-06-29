@@ -6,79 +6,20 @@ import { chat } from './shared/deepseek-client';
 import { C } from './shared/colors';
 import { printFileTree } from './commit/tree';
 import { selectFiles, selectAction } from './commit/selector';
-
-// ============ Gitignore 建议 ============
-
-async function suggestGitignore(
-    token: string,
-    modelName: string,
-    changes: { path: string; status: string }[],
-    reasoningEffort?: string
-): Promise<{ pattern: string; reason: string }[]> {
-    if (changes.length === 0) return [];
-
-    const fileList = changes.map(c => c.path).join('\n');
-
-    // 读取现有 .gitignore 内容
-    let existingGitignore = '';
-    try {
-        existingGitignore = execSync('cat .gitignore', { encoding: 'utf-8' }).trim();
-    } catch { /* ignore */ }
-
-    const text = await chat({ token, model: modelName }, {
-        systemPrompt: `你是一个 Git 专家。分析文件列表，判断哪些文件应该被添加到 .gitignore 中。
-
-规则：
-- 只输出 JSON 数组，不要输出其他内容
-- 每个元素包含 pattern（gitignore 模式）和 reason（简短理由）
-- 使用通配符匹配同类文件（如 *.log, dir/）
-- 不要建议已经在 .gitignore 中的模式
-- 如果所有文件都应该提交，返回空数组 []
-
-输出格式：
-[{"pattern": "node_modules/", "reason": "Dependencies"}, {"pattern": "*.log", "reason": "Log files"}]`,
-        userPrompt: `当前变更的文件列表：\n${fileList}\n\n现有 .gitignore 内容：\n${existingGitignore || '(empty)'}`,
-        maxTokens: 512,
-        reasoningEffort
-    });
-
-    if (!text) return [];
-
-    // 提取 JSON（模型可能输出 markdown code block）
-    const jsonMatch = /\[[\s\S]*\]/.exec(text);
-    if (!jsonMatch) return [];
-
-    const parsed = JSON.parse(jsonMatch[0]) as { pattern: string; reason: string }[];
-    return parsed.filter((s) => s.pattern && s.reason);
-}
-
-function printGitignoreSuggestions(suggestions: { pattern: string; reason: string }[]) {
-    if (suggestions.length === 0) return;
-
-    console.log(`\n  ${C.cyan}Suggest:${C.reset} ${C.dim}Add to .gitignore${C.reset}\n`);
-
-    for (const s of suggestions) {
-        console.log(`  ${C.dim}│${C.reset} ${C.cyan}${s.pattern}${C.reset} ${C.dim}# ${s.reason}${C.reset}`);
-    }
-    console.log();
-}
+import { getStagedDiff, getWorkingTreeDiff } from './commit/diff';
 
 // ============ Diff 获取 ============
 
 function getDiff(): string {
-    // 优先取已暂存的 diff
-    try {
-        const staged = execSync('git diff --cached', { encoding: 'utf-8' }).trim();
-        if (staged) return staged;
-    } catch { /* ignore */ }
+    const staged = getStagedDiff();
+    if (staged) return staged;
 
-    // fallback 到未暂存的 diff
-    try {
-        return execSync('git diff', { encoding: 'utf-8' }).trim();
-    } catch {
+    const unstaged = getWorkingTreeDiff();
+    if (!unstaged) {
         console.error('❌ 无法获取 git diff，请确认当前目录是 git 仓库');
         process.exit(1);
     }
+    return unstaged;
 }
 
 async function generateMessage(token: string, modelName: string, diff: string, reasoningEffort?: string): Promise<string> {
@@ -96,6 +37,7 @@ async function generateMessage(token: string, modelName: string, diff: string, r
 function autoCommitAndPush(message: string): void {
     if (!message.trim()) {
         console.error(`\n  ${C.red}✗${C.reset} Generated commit message is empty. Aborting.`);
+        console.error(`  ${C.dim}可能原因：当前所有变更都被 .gitignore 过滤，或 diff 为空。${C.reset}`);
         process.exit(1);
     }
 
@@ -109,9 +51,7 @@ function autoCommitAndPush(message: string): void {
         execSync(`rm -f ${JSON.stringify(lockFile)}`);
     } catch { /* ignore */ }
 
-    try {
-        execSync('git add -A');
-    } catch { /* ignore */ }
+    // 调用方（main 中的 --auto 路径）已保证所有变更 staged，无需重复 git add
 
     try {
         execFileSync('git', ['commit', '-m', message], { stdio: 'inherit' });
@@ -162,10 +102,14 @@ async function main() {
         process.exit(0);
     }
 
-    // 自动模式跳过 .gitignore 建议（节省一次 API 调用）
-    if (!isAuto) {
-        const suggestions = await suggestGitignore(token, modelName, changes, reasoningEffort);
-        printGitignoreSuggestions(suggestions);
+    // --auto 模式：先把所有变更 staged，避免纯 untracked 场景下 diff 为空
+    if (isAuto) {
+        try {
+            execSync('git add -A');
+        } catch (e) {
+            console.error(`\n  ${C.red}✗${C.reset} git add failed:`, (e as Error).message);
+            process.exit(1);
+        }
     }
 
     const diff = getDiff();

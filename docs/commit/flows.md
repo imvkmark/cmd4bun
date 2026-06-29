@@ -3,9 +3,9 @@
 ## 整体流程
 
 ```
-printFileTree()                    → 展示所有变更文件（已暂存 + 未暂存 + 未跟踪）
+[--auto] git add -A                → 把所有变更（含 untracked）一次性暂存（仅 auto 路径）
     ↓
-suggestGitignore()                 → AI 建议 .gitignore 规则
+printFileTree()                    → 展示所有变更文件（已暂存 + 未暂存 + 未跟踪）
     ↓
 getDiff()                          → 优先取 git diff --cached，fallback 到 git diff
     ↓
@@ -40,9 +40,10 @@ sequenceDiagram
     Git-->>CLI: 未跟踪文件列表
     CLI-->>User: 展示带状态图标的文件树 + 统计摘要
 
-    CLI->>AI: 请求 .gitignore 建议（基于文件列表 + 现有 .gitignore）
-    AI-->>CLI: 返回建议列表（pattern + reason）
-    CLI-->>User: 展示 .gitignore 建议
+    opt --auto 模式
+        CLI->>Git: git add -A
+        Note over CLI,Git: 把所有变更（含 untracked）一次性暂存
+    end
 
     CLI->>Git: git diff --cached（优先）/ git diff（fallback）
     Git-->>CLI: 返回 diff 内容
@@ -85,8 +86,8 @@ sequenceDiagram
 | 1 | 加载配置 | 环境变量 / config.json | token + modelName | token 缺失时退出；modelName 从 `deepseek.model` 读取，默认 `deepseek-chat`。配置路径：`$XDG_CONFIG_HOME/cmd4bun/config.json`，回退 `~/.config/cmd4bun/config.json` |
 | 2 | 收集文件变更 | Git 工作区 | `{path, status}[]` | 覆盖 staged（status=A/M/D/R/C）、unstaged（status=M/D）、untracked（status=?）。已暂存优先于未暂存，避免重复记录 |
 | 3 | 构建并打印文件树 | 文件列表 | 控制台输出 | 目录优先于文件排序，文件夹以 `/` 结尾加粗显示。含状态统计摘要行 |
-| 4 | 请求 .gitignore 建议 | 文件列表 + 现有 `.gitignore` | `{pattern, reason}[]` | AI 仅分析变更文件。已在 `.gitignore` 中的模式不再重复建议。输出为空时不展示。失败静默返回空数组 |
-| 5 | 获取 diff | Git 仓库 | diff 文本 | 优先 `git diff --cached`（已暂存 diff），fallback 到 `git diff`（未暂存 diff）。无 diff 但有新增文件（如纯 untracked 场景）时传入空字符串 |
+| 4 | `[--auto]` 自动 stage | 无 | 无（副作用） | 仅 `--auto` 模式执行：`git add -A` 把所有变更（含 untracked）一次性暂存，保证后续 `git diff --cached` 能拿到完整 diff，避免纯 untracked 场景下 commit message 为空。非 auto 模式跳过此步骤 |
+| 5 | 获取 diff | Git 仓库 | diff 文本 | 优先 `git diff --cached`（已暂存 diff），fallback 到 `git diff`（未暂存 diff）。在 `--auto` 模式下由于已 stage，staged diff 必然有内容 |
 | 6 | 生成提交说明 | diff 文本（前 12000 字符） | commit message 字符串 | 模型从配置 `deepseek.model` 读取，默认 `deepseek-chat`；max_tokens：1024。遵循 Conventional Commits 格式。生成失败或非 text 响应时返回空字符串 |
 | 7 | selectAction() 循环 | 当前 message | action key（a/m/r/x） | 展示 message，用户通过方向键或快捷键选择，Enter 确认 |
 | 8 | Accept -> selectFiles() | 文件变更列表 | 选中文件路径列表 | 交互式多选界面。已暂存文件[●]不可取消。Esc/Ctrl+C 回到 selectAction() 循环 |
@@ -100,7 +101,7 @@ sequenceDiagram
 |---------|---------|---------|
 | DeepSeek token 缺失 | 输出环境变量和配置文件设置方式后退出 | 流程终止 |
 | 当前仓库无变更 | 输出 "No changes to commit" 并退出 | 不创建提交 |
-| AI 生成失败或输出不可解析 | 返回空建议或空提交信息 | 影响本次交互质量 |
+| AI 生成失败或输出不可解析 | 返回空提交信息 | 影响本次交互质量；auto 模式下若 message 为空会 abort 并提示"diff 为空，请检查文件是否全部被 .gitignore 过滤" |
 | 用户按 Ctrl+C 或 Esc | 随时退出流程 | 不创建提交 |
 | selectFiles() 中 Esc/Ctrl+C | 返回空数组，回到 selectAction() 循环 | 流程回退，不提交 |
 | GitHub Copilot 快键冲突（Ctrl+I） | Ctrl+Space 可替代逗号键输入 | 仅影响 Space 切换 |
@@ -126,7 +127,7 @@ NO_CHANGES → EXITED
 ## 关键影响点
 
 - **`loadConfig` / `resolveToken`**：影响 DeepSeek API token 来源和缺失时的提示信息。
-- **`getFileChanges`**：影响变更摘要展示和 `.gitignore` 建议输入范围。
+- **`getFileChanges`**：影响变更摘要展示（`--auto` 模式的下游 stage-first 也会基于此结果）。
 - **`getDiff`**：影响 AI 生成提交说明所依据的 diff。优先 staged diff。
 - **`generateMessage`**：影响提交说明生成质量和模型调用参数。diff 超过 12000 字符时截断。
 - **`selectAction`**：影响用户确认、修改、重生成和取消提交的交互路径。

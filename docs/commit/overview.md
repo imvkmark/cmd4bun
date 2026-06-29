@@ -61,13 +61,13 @@ AI 辅助 Git 提交信息生成与交互式文件暂存工具，负责展示仓
 | 服务 | 交互方式 | 说明 |
 |------|---------|------|
 | Git 工作区 | 本地 CLI 调用 | 读取变更文件、diff，执行 add 和 commit |
-| DeepSeek API | HTTPS（原生 `/chat/completions` 接口） | 生成提交说明和 `.gitignore` 建议 |
+| DeepSeek API | HTTPS（原生 `/chat/completions` 接口） | 生成提交说明 |
 
 ## 边界说明
 
 - 不负责判断 Git 提交内容是否业务正确，只辅助展示变更并生成提交说明。
 - 不负责 DeepSeek 的账号登录、权限开通和 token 管理。
-- `.gitignore` 建议和提交说明都需要用户确认，不自动落地 AI 建议。
+- 提交说明需要用户确认，不自动落地 AI 建议。
 
 ## 文档索引
 
@@ -80,6 +80,7 @@ AI 辅助 Git 提交信息生成与交互式文件暂存工具，负责展示仓
 - 正常进度输出到 stdout，错误输出到 stderr；用户输入、环境或运行错误使用非零退出码。
 - 外部命令调用优先使用参数数组传递，避免用字符串拼接方式执行包含动态内容的命令。
 - 修改交互流程或提交策略时，同步更新 [business.md](business.md) 与 [flows.md](flows.md)。
+- `--auto` 模式必须先执行 `git add -A` 把所有变更（含 untracked）暂存，再读取 diff 生成提交说明，避免纯 untracked 场景下 commit message 为空。
 
 ## 函数结构
 
@@ -89,10 +90,9 @@ AI 辅助 Git 提交信息生成与交互式文件暂存工具，负责展示仓
 | `getFileChanges()` | 收集 staged / unstaged / untracked 变更 |
 | `buildTree()` | 将文件路径构建为树形结构 |
 | `printFileTree()` | 展示带颜色和状态图标的文件树 |
-| `suggestGitignore()` | AI 建议 `.gitignore` 规则 |
-| `printGitignoreSuggestions()` | 展示 `.gitignore` 建议 |
-| `getDiff()` | 获取 diff（优先 staged，fallback 到 working tree） |
+| `getDiff()` | 获取 diff（封装 `getStagedDiff` + `getWorkingTreeDiff`，优先 staged，fallback 到 working tree） |
 | `generateMessage()` | AI 生成 Conventional Commits 格式提交说明 |
 | `selectAction()` | 交互式菜单：Accept / Modify / Regenerate / Exit |
 | `selectFiles()` | 交互式文件多选：Space 切换、Enter 确认 |
 | `getStagedPaths()` | 获取已暂存文件路径集合 |
+| `getStagedDiff()` / `getWorkingTreeDiff()` | 分别获取已暂存与未暂存的 diff 内容（`src/commit/diff.ts`） |
