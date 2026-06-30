@@ -17,7 +17,7 @@
 | `feishu/download-flow.ts` | 文档下载流程：并发下载 + 断点续传（基于 updated_at），默认自动处理图片（下载/去重/上传 OSS/URL 替换/节点级 diff）+ 末尾全局孤儿兜底 |
 | `feishu/copy-docs-flow.ts` | 已下载文档复制：按 group 分发到 `feishu.{group}.aimDirectory`，目标文件名 `human_path.md` |
 | `feishu/diff-with-flow.ts` | 目标目录孤儿副本检测：按 `human_path` 反查 DB，列出两类孤儿（只读） |
-| `feishu/aim-dir.ts` | `aimDirectory` 解析共享 helper：按 group 名 → fallback 到 default，copy-docs 与 diff-with 共用 |
+| `feishu/aim-dir.ts` | `aimDirectory` / `aimUrl` 解析共享 helper：按 group 名 → fallback 到 default，copy-docs、diff-with、download(跨组引用解析)共用 |
 | `feishu/images.ts` | 图片处理核心：URL 提取、下载、MD5 去重、OSS 上传、Markdown 链接替换、全局孤儿扫描 |
 | `feishu/utils.ts` | 工具函数：Shell 封装、XML→文本转换、文件遍历、限流器、进度输出、时间格式化、Markdown 标题提取与正文预览 |
 | `feishu/migrations/` | 数据库迁移 SQL 文件（001_initial.sql ~ 010_split_images.sql） |

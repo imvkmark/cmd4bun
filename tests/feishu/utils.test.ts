@@ -949,3 +949,101 @@ describe('resolveSubPageListBlocks', () => {
         expect(warnings).toEqual([]);
     });
 });
+
+// ============ ResolveLinkResult 三态(url 分支)============
+
+describe('resolveCiteBlocks — resolveLink 返回 url 分支', () => {
+    test('返回 { url } 时 cite 应原样输出绝对 URL,不加 .md 后缀', () => {
+        const content = '<cite doc-id="x1" file-type="wiki" title="跨组" type="doc"></cite>';
+        const resolveLink = (docId: string): ResolveLinkResult => {
+            void docId;
+            return { url: 'https://blog.example.com/post/cross-group.html' };
+        };
+        const { result, warnings } = resolveCiteBlocks(content, resolveLink);
+        expect(result).toBe('[跨组](https://blog.example.com/post/cross-group.html)');
+        expect(warnings).toEqual([]);
+    });
+
+    test('返回 { url } 仍允许后缀不是 .md(如 sheet/file 的 OSS 地址)', () => {
+        const content = '<cite doc-id="x1" file-type="wiki" title="表格" type="doc"></cite>';
+        const resolveLink = (docId: string): ResolveLinkResult => {
+            void docId;
+            return { url: 'https://oss.example.com/sheet.xlsx' };
+        };
+        const { result, warnings } = resolveCiteBlocks(content, resolveLink);
+        expect(result).toBe('[表格](https://oss.example.com/sheet.xlsx)');
+        expect(warnings).toEqual([]);
+    });
+
+    test('混合 url + path:两种来源应分别正确输出', () => {
+        const content = '<cite doc-id="local" file-type="wiki" title="同组" type="doc"></cite>'
+            + ' <cite doc-id="remote" file-type="wiki" title="跨组" type="doc"></cite>';
+        const resolveLink = (docId: string): ResolveLinkResult => {
+            if (docId === 'local') return { path: 'docs/local' };
+            return { url: 'https://blog.example.com/x.html' };
+        };
+        const { result, warnings } = resolveCiteBlocks(content, resolveLink);
+        expect(result).toContain('[同组](docs/local.md)');
+        expect(result).toContain('[跨组](https://blog.example.com/x.html)');
+        expect(warnings).toEqual([]);
+    });
+
+    test('混合 url + reason:成功项输出,失败项保留原文 + warning', () => {
+        const content = '<cite doc-id="ok" file-type="wiki" title="OK" type="doc"></cite>'
+            + '<cite doc-id="bad" file-type="wiki" title="BAD" type="doc"></cite>';
+        const resolveLink = (docId: string): ResolveLinkResult => {
+            if (docId === 'ok') return { url: 'https://example.com/a.html' };
+            return { reason: 'cross-group aimUrl 缺失' };
+        };
+        const { result, warnings } = resolveCiteBlocks(content, resolveLink);
+        expect(result).toContain('[OK](https://example.com/a.html)');
+        expect(result).toContain('<cite doc-id="bad"');
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]!).toContain('cross-group aimUrl 缺失');
+    });
+});
+
+describe('resolveSubPageListBlocks — resolveLink 返回 url 分支', () => {
+    test('docx 命中返回 { url } 应直出绝对 URL 不加 .md', () => {
+        const content = '<sub-page-list>'
+            + '<sub-page doc-id="d1" file-type="docx" title="跨组文档"/>'
+            + '</sub-page-list>';
+        const resolveLink = (docId: string): ResolveLinkResult => {
+            void docId;
+            return { url: 'https://blog.example.com/post/x.html' };
+        };
+        const { result, warnings } = resolveSubPageListBlocks(content, resolveLink);
+        expect(result).toBe('- [跨组文档](https://blog.example.com/post/x.html)');
+        expect(warnings).toEqual([]);
+    });
+
+    test('sheet/file 返回 { url } 应直出绝对 URL 不加 .md', () => {
+        const content = '<sub-page-list>'
+            + '<sub-page doc-id="s1" file-type="sheet" title="表格"/>'
+            + '<sub-page doc-id="f1" file-type="file" title="PDF"/>'
+            + '</sub-page-list>';
+        const resolveLink = (docId: string): ResolveLinkResult => ({
+            url: docId === 's1'
+                ? 'https://oss.example.com/sheet.xlsx'
+                : 'https://oss.example.com/doc.pdf'
+        });
+        const { result, warnings } = resolveSubPageListBlocks(content, resolveLink);
+        expect(result).toContain('- [表格](https://oss.example.com/sheet.xlsx)');
+        expect(result).toContain('- [PDF](https://oss.example.com/doc.pdf)');
+        expect(warnings).toEqual([]);
+    });
+
+    test('混合 url + path:docx 跨组走 url、同组走 path 追加 .md', () => {
+        const content = '<sub-page-list>'
+            + '<sub-page doc-id="local" file-type="docx" title="同组"/>'
+            + '<sub-page doc-id="remote" file-type="docx" title="跨组"/>'
+            + '</sub-page-list>';
+        const resolveLink = (docId: string): ResolveLinkResult => {
+            if (docId === 'local') return { path: 'docs/local' };
+            return { url: 'https://blog.example.com/y.html' };
+        };
+        const { result } = resolveSubPageListBlocks(content, resolveLink);
+        expect(result).toContain('- [同组](docs/local.md)');
+        expect(result).toContain('- [跨组](https://blog.example.com/y.html)');
+    });
+});

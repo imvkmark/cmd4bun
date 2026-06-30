@@ -6,14 +6,15 @@ import { mkdirSync, existsSync, rmSync } from 'node:fs';
 import { C } from '../shared/colors';
 import { writeProgress, createRateLimiter, parseAndStripFrontmatter, formatUpdatedAt, resolveCiteBlocks, resolveSubPageListBlocks, resolveCalloutBlocks } from './utils';
 import type { ResolveLinkResult } from './utils';
-import { getDB, closeDB, getDBPath, getSpaceIds, getDownloadQueue, markNodeDownloaded, updateNodeHumanPath, updateNodeDescription, updateNodeUploadUrl, updateNodeIgnore, updateNodeGroup, updateNodeUpdatedAt, getNode, getNodeByObjToken, getImagesByNode, deleteNodeByToken, incrementNodePriority } from './db';
+import { getDB, closeDB, getDBPath, getSpaceIds, getDownloadQueue, markNodeDownloaded, updateNodeHumanPath, updateNodeDescription, updateNodeUploadUrl, updateNodeIgnore, updateNodeGroup, updateNodeUpdatedAt, getNode, getNodeByObjToken, getImagesByNode, deleteNodeByToken } from './db';
 import type { DBNode } from './db';
 import { fetchDocContent, fetchNodeMetaAsync, FETCHABLE_TYPES, resolveDescription } from './api';
 import { processImagesInFile, cleanupOrphanImages, cleanupGlobalOrphans, uploadToOSS } from './images';
 import type { ImageFailure } from './images';
-import { loadConfig, buildOssConfig, resolveFeishuGroupConfig } from '../config';
+import { loadConfig, buildOssConfig } from '../config';
 import type { OssClientConfig } from '../config';
 import type { DownloadArgs } from '../feishu';
+import { resolveAimUrl } from './aim-dir';
 
 // ============ 共享内容处理 ============
 
@@ -28,14 +29,19 @@ import type { DownloadArgs } from '../feishu';
  *
  * 注意：被忽略（YAML `ignore: Y`）的文档不影响 download 流程，仍正常写入 human_path、
  * description、frontmatter 与 downloaded_at；copydocs 阶段会基于 is_ignore 过滤。
+ *
+ * 导出供测试用:resolveLink 闭包内的跨组引用决策与 aimUrl 解析需要直接构造 DB 节点验证。
  */
-async function processDocContent(
+export async function processDocContent(
     content: string,
     title: string,
     updatedAt: string,
     db: Database,
     node: DBNode
 ): Promise<{ slug: string | null; processedContent: string; unresolvedRefCount: number }> {
+    // 加载配置:resolveLink 闭包需读 refNode.group 的 aimUrl,提前到函数顶部避免闭包内 lazy load
+    const cfg = await loadConfig();
+
     // 解析 slug、ignore、group 并移除 YAML 代码块
     const { slug, ignore, group, cleanedContent } = parseAndStripFrontmatter(content);
 
@@ -59,18 +65,39 @@ async function processDocContent(
     let unresolvedRefCount = 0;
 
     // 解析 <cite> 引用块为 Markdown 链接（独立于 slug，即使无 slug 的文档也需解析引用）
+    //
+    // resolveLink 决策(四分支):
+    // - sheet/file + upload_url → { url } (绝对 URL,跨组/同组都不变)
+    // - docx + human_path + 同组(refNode.group === node.group) → { path } (相对路径,同 aimDirectory 下有效)
+    // - docx + human_path + 跨组 + aimUrl 可解析 → { url } (绝对 URL,跨 aimDirectory 也能跳转)
+    // - docx + human_path + 跨组 + aimUrl 不可解析 → { reason } (配置问题,保留原文 + warning)
+    // - 未就绪(human_path/upload_url 缺失)→ { reason } (保留原文 + warning)
+    //
+    // 注:历史上被引节点"未就绪"会触发 incrementNodePriority + markNodeDownloaded(null) bump,
+    // 让被引节点排到下载队列前面。但 aimUrl 缺失是配置问题,重下无法自动修复;
+    // human_path 缺失同理(只能等作者补 slug 后下次 download 覆盖写)。
+    // 因此跨任务(cross-group-link)统一取消所有 bump,失败路径仅靠下次 download 重试覆盖写。
     const citeResolveLink = (docId: string): ResolveLinkResult => {
         const refNode = getNode(db, docId);
         if (refNode === null) return { reason: 'doc-id 未在索引中找到，请先运行 sync' };
         if ((refNode.obj_type === 'sheet' || refNode.obj_type === 'file') && refNode.upload_url !== null) {
-            return { path: refNode.upload_url };
+            return { url: refNode.upload_url };
         }
         if (refNode.obj_type === 'docx' && refNode.human_path !== null) {
-            return { path: refNode.human_path };
+            if (refNode.group === node.group) {
+                return { path: refNode.human_path };
+            }
+            // 跨组:尝试解析被引方所在 group 的 aimUrl
+            const aimUrl = resolveAimUrl(cfg, refNode.group);
+            if (aimUrl) {
+                return {
+                    url: `${aimUrl.replace(/\/+$/, '')}/${refNode.human_path.replace(/^\/+/, '')}.html`
+                };
+            }
+            return {
+                reason: `cross-group 引用目标 group "${refNode.group}" 缺少 aimUrl 配置`
+            };
         }
-        // 被引节点存在但未就绪：提升优先级 + 清理被引节点 downloaded_at 确保下次重下
-        incrementNodePriority(db, docId);
-        markNodeDownloaded(db, docId, null);
         return {
             reason: refNode.obj_type === 'docx'
                 ? 'human_path 未设置（缺 slug）'
@@ -89,26 +116,28 @@ async function processDocContent(
     unresolvedRefCount += warnings.filter((w) => w.includes('引用解析失败')).length;
 
     // 解析 <sub-page-list> 块为 Markdown 无序列表（独立于 slug）
-    // 与 cite 解析器共用相同的"docx 走 human_path、sheet/file 走 upload_url、未就绪时 bump priority"语义,
-    // 但 lookup key 不同:sub-page doc-id 是飞书文档对象的全局 ID(obj_token),而 cite doc-id 是 wiki 树节点 ID(node_token)
-    //
-    // priority bump 覆盖范围(对应"解析失败"的所有分支):
-    // - obj_token 在 DB 且 human_path/upload_url 已就绪 → 直接返回路径(无 bump,解析成功)
-    // - obj_token 在 DB 但 human_path/upload_url 未就绪 → incrementNodePriority 把它提前到队列前端(解析失败但能补救)
-    // - obj_token 不在 DB → 无法 bump(nodes 表无对应行,UPDATE 影响 0 行,补不回来);
-    //   此时 resolveSubPageListBlocks 仍会保留原文 + 警告,提示作者先跑 sync 把被引节点写进索引
+    // 与 cite 解析器共用相同的"同组 path / 跨组 url / 配置缺失 reason / 未就绪 reason"决策。
+    // lookup key 不同:sub-page doc-id 是飞书文档对象的全局 ID(obj_token),而 cite doc-id 是 wiki 树节点 ID(node_token)。
     const subPageResolveLink = (objToken: string): ResolveLinkResult => {
         const refNode = getNodeByObjToken(db, objToken);
         if (refNode === null) return { reason: 'doc-id 未在索引中找到，请先运行 sync' };
         if ((refNode.obj_type === 'sheet' || refNode.obj_type === 'file') && refNode.upload_url !== null) {
-            return { path: refNode.upload_url };
+            return { url: refNode.upload_url };
         }
         if (refNode.obj_type === 'docx' && refNode.human_path !== null) {
-            return { path: refNode.human_path };
+            if (refNode.group === node.group) {
+                return { path: refNode.human_path };
+            }
+            const aimUrl = resolveAimUrl(cfg, refNode.group);
+            if (aimUrl) {
+                return {
+                    url: `${aimUrl.replace(/\/+$/, '')}/${refNode.human_path.replace(/^\/+/, '')}.html`
+                };
+            }
+            return {
+                reason: `cross-group 引用目标 group "${refNode.group}" 缺少 aimUrl 配置`
+            };
         }
-        // 被引节点存在但未就绪：提升优先级 + 清理被引节点 downloaded_at 确保下次重下
-        incrementNodePriority(db, refNode.node_token);
-        markNodeDownloaded(db, refNode.node_token, null);
         return {
             reason: refNode.obj_type === 'docx'
                 ? 'human_path 未设置（缺 slug）'
@@ -146,9 +175,7 @@ async function processDocContent(
     }
 
     // 构建 frontmatter 并注入：aimUrl 按节点 group 取(该 group 未配置时 fallback 到 default)
-    const cfg = await loadConfig();
-    const groupConfig = resolveFeishuGroupConfig(cfg, group);
-    const aimUrl = groupConfig?.aimUrl ?? resolveFeishuGroupConfig(cfg, 'default')?.aimUrl;
+    const aimUrl = resolveAimUrl(cfg, group) ?? undefined;
     const frontmatter = buildFrontmatter(title, slug, description, updatedAt, aimUrl);
 
     return { slug, processedContent: frontmatter + resolvedContent, unresolvedRefCount };

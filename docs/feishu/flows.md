@@ -252,9 +252,11 @@ for each node in queue (并行 worker):
         (同步) parseAndStripFrontmatter 同时解析 group(小写 [a-z0-9-]+) → updateNodeGroup
         (覆盖写;非法值降级 default)
           ↓
-        resolveCiteBlocks(cleanedContent, cb)  → <cite> → [title](human_path.md)
+        (函数顶部) loadConfig()  → cfg 供 resolveLink 闭包解析跨组 aimUrl 使用
           ↓
-        resolveSubPageListBlocks(citeResult, cb)  → <sub-page-list> → Markdown UL
+        resolveCiteBlocks(cleanedContent, cb)  → <cite> → 见下方"resolveLink 四分支决策"
+          ↓
+        resolveSubPageListBlocks(citeResult, cb)  → <sub-page-list> → Markdown UL(同 cite 四分支)
           ↓
         resolveCalloutBlocks(subPageResult)  → <callout> → ::: container
           ↓
@@ -265,12 +267,15 @@ for each node in queue (并行 worker):
   > processDocContent 由 downNode（单节点下载）和 runDownload（批量下载）共用，
   > 确保两个入口的内容处理行为完全一致。
 
-  > callback 闭包内实现 priority 副作用：
-  > - 被引方在 nodes 表中不存在 → 跳过（UPDATE 影响 0 行,无法 bump；警告提示作者先跑 sync）
-  > - 被引方存在但 human_path / upload_url 未就绪 → incrementNodePriority(db, node_token) 把被引方优先级 +1
-  > - 被引方存在且 human_path / upload_url 已就绪 → 直接返回路径(无副作用)
-    (注：sheet/file 节点的引用通过 upload_url 解析,docx 走 human_path)
-    (注：sub-page-list 用 obj_token 查节点 → 拿到 node_token 再 bump,与 cite 解析器行为对齐)
+  > resolveLink 闭包内决策(同 cite/sub-page,docx 与 sheet/file 走 url 分支时直出):
+  > - sheet/file + upload_url → { url: upload_url }(绝对 URL,跨/同组一致)
+  > - docx + human_path + 同组(node.group === refNode.group) → { path: human_path }(→ [title](human_path.md))
+  > - docx + human_path + 跨组 + resolveAimUrl(cfg, refNode.group) 可解析 → { url: `${aimUrl}/${human_path}.html` }(跨 aimDirectory 跳转)
+  > - docx + human_path + 跨组 + aimUrl 不可解析 → { reason: 'cross-group 引用目标 group X 缺少 aimUrl 配置' }(保留原文 + warning)
+  > - 未就绪(human_path/upload_url 缺失)→ { reason: 'human_path 未设置（缺 slug）' | 'upload_url 未就绪' }(保留原文 + warning)
+  >
+  > resolveLink 闭包内不再 bump priority(aimUrl 缺失是配置问题,human_path/upload_url 缺失同理等作者修复后下次 download 覆盖写)。
+  > sub-page-list 用 obj_token 查节点 → 拿到 refNode.group 后走同一决策;与 cite 解析器行为对齐。
 ```
 
 

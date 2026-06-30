@@ -1,10 +1,12 @@
 // 飞书下载流程单元测试
-import { test, expect, describe } from 'bun:test';
-import { mkdtempSync, existsSync } from 'node:fs';
+import { test, expect, describe, beforeEach, afterEach } from 'bun:test';
+import { Database } from 'bun:sqlite';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { downNode, buildFrontmatter, uploadImagesForNode } from '../../src/feishu/download-flow';
+import { downNode, buildFrontmatter, uploadImagesForNode, processDocContent } from '../../src/feishu/download-flow';
 import { parseAndStripFrontmatter } from '../../src/feishu/utils';
+import type { DBNode } from '../../src/feishu/db';
 
 // ============ Mock 数据 ============
 
@@ -346,5 +348,315 @@ describe('uploadImagesForNode — file/sheet 节点的空 file_path 防御短路
         expect(
             uploadImagesForNode(tempDir, {} as never, node, null, noopSlot)
         ).resolves.toBeDefined();
+    });
+});
+
+// ============ processDocContent 跨 group 引用解析 ============
+
+describe('processDocContent — 跨 group 引用解析', () => {
+    let tempDir: string;
+    let prevXdg: string | undefined;
+
+    /**
+     * 构造仅含 nodes 表的最小 SQLite DB,列结构对齐 DBNode 接口。
+     * 不依赖完整 migration 流程,便于测试聚焦 resolveLink 决策。
+     */
+    function createTestDb(): Database {
+        const db = new Database(':memory:');
+        db.run(`
+            CREATE TABLE nodes (
+                node_token TEXT PRIMARY KEY,
+                space_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                obj_token TEXT NOT NULL,
+                obj_type TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                updated_at TEXT,
+                updated_at_last_synced_at TEXT,
+                parent_node_token TEXT,
+                downloaded_at TEXT,
+                scanned_at TEXT,
+                human_path TEXT,
+                description TEXT,
+                priority INTEGER DEFAULT 0,
+                is_ignore INTEGER DEFAULT 0,
+                upload_url TEXT,
+                "group" TEXT NOT NULL DEFAULT 'default'
+            )
+        `);
+        return db;
+    }
+
+    function insertNode(db: Database, node: Partial<DBNode> & { node_token: string; obj_token: string }): void {
+        db.run(
+            `INSERT INTO nodes (
+                node_token, space_id, title, obj_token, obj_type, file_path,
+                updated_at, updated_at_last_synced_at, parent_node_token,
+                downloaded_at, scanned_at, human_path, description,
+                priority, is_ignore, upload_url, "group"
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                node.node_token,
+                node.space_id ?? 's1',
+                node.title ?? node.node_token,
+                node.obj_token,
+                node.obj_type ?? 'docx',
+                node.file_path ?? '',
+                node.updated_at ?? '2026-04-05T00:00:00.000Z',
+                node.updated_at_last_synced_at ?? null,
+                node.parent_node_token ?? '',
+                node.downloaded_at ?? '2026-04-05T00:00:00.000Z',
+                node.scanned_at ?? null,
+                node.human_path ?? null,
+                node.description ?? 'test description',
+                node.priority ?? 0,
+                node.is_ignore ?? 0,
+                node.upload_url ?? null,
+                node.group ?? 'default'
+            ]
+        );
+    }
+
+    beforeEach(() => {
+        // 用临时 XDG 目录注入测试 config,避免污染真实配置
+        tempDir = mkdtempSync(join(tmpdir(), 'feishu-test-cfg-'));
+        mkdirSync(join(tempDir, 'cmd4bun'), { recursive: true });
+        prevXdg = process.env.XDG_CONFIG_HOME;
+        process.env.XDG_CONFIG_HOME = tempDir;
+    });
+
+    afterEach(() => {
+        if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+        else process.env.XDG_CONFIG_HOME = prevXdg;
+        rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    function writeConfig(cfg: unknown): void {
+        writeFileSync(join(tempDir, 'cmd4bun', 'config.json'), JSON.stringify(cfg));
+    }
+
+    /**
+     * 构造当前节点:group=blog,有 slug,有 description(避免触发 resolveDescription)。
+     */
+    function makeCurrentNode(group: string, overrides: Partial<DBNode> = {}): DBNode {
+        return makeMockNode({
+            node_token: 'current',
+            obj_token: 'obj-current',
+            obj_type: 'docx',
+            human_path: 'current-page',
+            description: 'current desc',
+            group,
+            file_path: 'blog/current.md',
+            ...overrides
+        });
+    }
+
+    test('cite 同 group 引用应输出相对路径 .md', async () => {
+        const db = createTestDb();
+        const current = makeCurrentNode('blog');
+        // 被引节点同组 + human_path 已就绪
+        insertNode(db, {
+            node_token: 'ref-same',
+            obj_token: 'obj-ref-same',
+            obj_type: 'docx',
+            human_path: 'referenced-page',
+            group: 'blog'
+        });
+        const content = '正文 <cite doc-id="ref-same" file-type="wiki" title="同组引用" type="doc"></cite> 结尾';
+
+        const { processedContent } = await processDocContent(
+            content, '当前', '2026-04-05T00:00:00.000Z', db, current
+        );
+
+        expect(processedContent).toContain('[同组引用](referenced-page.md)');
+        expect(processedContent).not.toContain('https://');
+    });
+
+    test('cite 跨 group + 被引方 aimUrl 命中 → 绝对 URL .html', async () => {
+        writeConfig({
+            feishu: {
+                default: { aimUrl: 'https://docs.example.com' },
+                blog: { aimUrl: 'https://blog.example.com' }
+            }
+        });
+        const db = createTestDb();
+        const current = makeCurrentNode('blog');
+        // 被引节点跨组 + human_path 已就绪
+        insertNode(db, {
+            node_token: 'ref-cross',
+            obj_token: 'obj-ref-cross',
+            obj_type: 'docx',
+            human_path: 'cross-page',
+            group: 'docs'
+        });
+        const content = '正文 <cite doc-id="ref-cross" file-type="wiki" title="跨组引用" type="doc"></cite> 结尾';
+
+        const { processedContent } = await processDocContent(
+            content, '当前', '2026-04-05T00:00:00.000Z', db, current
+        );
+
+        expect(processedContent).toContain('[跨组引用](https://docs.example.com/cross-page.html)');
+        expect(processedContent).not.toContain('cross-page.md');
+    });
+
+    test('cite 跨 group + 被引方 aimUrl 缺失 → 保留原文 + warning', async () => {
+        // 只有 blog group 配 aimUrl;被引方 docs 没配
+        writeConfig({
+            feishu: {
+                blog: { aimUrl: 'https://blog.example.com' }
+            }
+        });
+        const db = createTestDb();
+        const current = makeCurrentNode('blog');
+        insertNode(db, {
+            node_token: 'ref-noaim',
+            obj_token: 'obj-ref-noaim',
+            obj_type: 'docx',
+            human_path: 'orphan-page',
+            group: 'docs'
+        });
+        const content = '正文 <cite doc-id="ref-noaim" file-type="wiki" title="缺aimUrl" type="doc"></cite> 结尾';
+
+        // capture stdout for warning
+        const captured: string[] = [];
+        const origWrite = process.stdout.write.bind(process.stdout);
+        process.stdout.write = (chunk: string | Uint8Array): boolean => {
+            captured.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
+            return true;
+        };
+
+        try {
+            const { processedContent } = await processDocContent(
+                content, '当前', '2026-04-05T00:00:00.000Z', db, current
+            );
+            expect(processedContent).toContain('<cite doc-id="ref-noaim"');
+            expect(processedContent).not.toContain('orphan-page.md');
+            expect(captured.join('')).toContain('cross-group');
+            expect(captured.join('')).toContain('docs');
+            expect(captured.join('')).toContain('缺少 aimUrl');
+        } finally {
+            process.stdout.write = origWrite;
+        }
+    });
+
+    test('cite 跨 group + aimUrl 缺失应不修改被引节点的 priority/downloaded_at', async () => {
+        writeConfig({
+            feishu: {
+                blog: { aimUrl: 'https://blog.example.com' }
+            }
+        });
+        const db = createTestDb();
+        const current = makeCurrentNode('blog');
+        insertNode(db, {
+            node_token: 'ref-no-bump',
+            obj_token: 'obj-ref-no-bump',
+            obj_type: 'docx',
+            human_path: 'orphan-page',
+            group: 'docs',
+            priority: 0,
+            downloaded_at: '2026-04-05T00:00:00.000Z'
+        });
+        const content = '<cite doc-id="ref-no-bump" file-type="wiki" title="x" type="doc"></cite>';
+
+        // 抑制 stdout
+        const origWrite = process.stdout.write.bind(process.stdout);
+        process.stdout.write = () => true;
+        try {
+            await processDocContent(content, 'T', '2026-04-05T00:00:00.000Z', db, current);
+        } finally {
+            process.stdout.write = origWrite;
+        }
+
+        const after = db.query('SELECT priority, downloaded_at FROM nodes WHERE node_token = ?').get('ref-no-bump') as { priority: number; downloaded_at: string | null };
+        expect(after.priority).toBe(0);
+        expect(after.downloaded_at).toBe('2026-04-05T00:00:00.000Z');
+    });
+
+    test('cite 未就绪(human_path 缺失) → 原文 + warning 且不 bump', async () => {
+        writeConfig({
+            feishu: {
+                blog: { aimUrl: 'https://blog.example.com' }
+            }
+        });
+        const db = createTestDb();
+        const current = makeCurrentNode('blog');
+        insertNode(db, {
+            node_token: 'ref-not-ready',
+            obj_token: 'obj-ref-not-ready',
+            obj_type: 'docx',
+            human_path: null,
+            group: 'blog',
+            priority: 5,
+            downloaded_at: '2026-04-05T00:00:00.000Z'
+        });
+        const content = '<cite doc-id="ref-not-ready" file-type="wiki" title="未就绪" type="doc"></cite>';
+
+        const origWrite = process.stdout.write.bind(process.stdout);
+        process.stdout.write = () => true;
+        try {
+            const { processedContent } = await processDocContent(
+                content, 'T', '2026-04-05T00:00:00.000Z', db, current
+            );
+            expect(processedContent).toContain('<cite doc-id="ref-not-ready"');
+        } finally {
+            process.stdout.write = origWrite;
+        }
+
+        const after = db.query('SELECT priority, downloaded_at FROM nodes WHERE node_token = ?').get('ref-not-ready') as { priority: number; downloaded_at: string | null };
+        // priority 未变(原本就是 5,不被 bump)
+        expect(after.priority).toBe(5);
+        // downloaded_at 不被清空(原本就非空,旧版会被清空)
+        expect(after.downloaded_at).toBe('2026-04-05T00:00:00.000Z');
+    });
+
+    test('sub-page 跨 group + aimUrl 命中 → 绝对 URL .html', async () => {
+        writeConfig({
+            feishu: {
+                default: { aimUrl: 'https://docs.example.com' },
+                blog: { aimUrl: 'https://blog.example.com' }
+            }
+        });
+        const db = createTestDb();
+        const current = makeCurrentNode('blog');
+        // sub-page 用 obj_token 查,需要 obj_token 唯一
+        insertNode(db, {
+            node_token: 'sp-cross-node',
+            obj_token: 'sp-cross-obj',
+            obj_type: 'docx',
+            human_path: 'sp-cross',
+            group: 'docs'
+        });
+        const content = '<sub-page-list>'
+            + '<sub-page doc-id="sp-cross-obj" file-type="docx" title="子页跨组"/>'
+            + '</sub-page-list>';
+
+        const { processedContent } = await processDocContent(
+            content, 'T', '2026-04-05T00:00:00.000Z', db, current
+        );
+
+        expect(processedContent).toContain('- [子页跨组](https://docs.example.com/sp-cross.html)');
+        expect(processedContent).not.toContain('sp-cross.md');
+    });
+
+    test('sub-page 同 group 应输出相对路径 .md', async () => {
+        const db = createTestDb();
+        const current = makeCurrentNode('blog');
+        insertNode(db, {
+            node_token: 'sp-same-node',
+            obj_token: 'sp-same-obj',
+            obj_type: 'docx',
+            human_path: 'sp-same',
+            group: 'blog'
+        });
+        const content = '<sub-page-list>'
+            + '<sub-page doc-id="sp-same-obj" file-type="docx" title="子页同组"/>'
+            + '</sub-page-list>';
+
+        const { processedContent } = await processDocContent(
+            content, 'T', '2026-04-05T00:00:00.000Z', db, current
+        );
+
+        expect(processedContent).toContain('- [子页同组](sp-same.md)');
+        expect(processedContent).not.toContain('https://');
     });
 });

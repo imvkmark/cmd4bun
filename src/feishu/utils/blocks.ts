@@ -3,8 +3,13 @@
 
 import { parseHtmlAttrs } from './markdown';
 
-/** resolveLink 回调的返回值 */
-export type ResolveLinkResult = { path: string } | { reason: string };
+/**
+ * resolveLink 回调的返回值(三态):
+ * - path: 相对路径(同 group 内的 human_path),调用方负责追加 .md
+ * - url:  绝对 URL(跨 group aimUrl + slug + .html,或 sheet/file 的 upload_url),调用方原样输出
+ * - reason: 解析失败,调用方保留原文 + warning
+ */
+export type ResolveLinkResult = { path: string } | { url: string } | { reason: string };
 
 /**
  * 解析内容中的 <cite> 引用块，将 Wiki 文档引用替换为 Markdown 链接。
@@ -58,6 +63,12 @@ export function resolveCiteBlocks(
                 return match;
             }
 
+            // url 分支(绝对 URL,如跨 group aimUrl 或 sheet/file upload_url)原样输出,不加 .md
+            if ('url' in linkResult) {
+                return `[${title}](${linkResult.url})`;
+            }
+
+            // path 分支(相对路径)追加 .md
             return `[${title}](${linkResult.path}.md)`;
         }
     );
@@ -170,8 +181,14 @@ export function resolveSubPageListBlocks(
                         return itemMatch;
                     }
 
-                    const path = fileType === 'docx' ? `${link.path}.md` : link.path;
-                    lines.push(`- [${title}](${path})`);
+                    // url 分支(绝对 URL,如跨 group aimUrl 或 sheet/file upload_url)原样输出
+                    if ('url' in link) {
+                        lines.push(`- [${title}](${link.url})`);
+                    } else {
+                        // path 分支:docx 追加 .md;sheet/file 的 upload_url 已自带后缀,直出
+                        const path = fileType === 'docx' ? `${link.path}.md` : link.path;
+                        lines.push(`- [${title}](${path})`);
+                    }
                     meaningfulCount++;
                     return itemMatch;
                 }
