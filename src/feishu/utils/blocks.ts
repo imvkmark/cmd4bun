@@ -77,8 +77,11 @@ export function resolveCiteBlocks(
 }
 
 /**
- * 将飞书 <callout> 块转换为 VitePress ::: container 语法，并对内部 `<a href="...">text</a>`
- * 链接做 href 替换（保持 `<a>` 标签形态，不转 Markdown）。
+ * 将飞书 <callout> 块转换为 VitePress ::: container 语法，并对内部链接做格式转换。
+ *
+ * 转换目标(因 VitePress `:::` 容器内 HTML 块不再渲染 Markdown 语法):
+ * - `<a href="X">text</a>` 飞书原生 HTML 锚点 → 保持 `<a>` 标签形态,只换 href
+ * - `[text](url)` Markdown 链接 → 走 resolveLink 转换(同 `<a>` 四分支决策)
  *
  * emoji → container 类型映射：
  *   📆 → info, 💡 → tip, ✅ → tip
@@ -89,16 +92,14 @@ export function resolveCiteBlocks(
  * - <callout emoji="📆"> → ::: info 📆
  * - </callout> → :::
  *
- * 内部 `<a>` 链接 href 替换（与 cite / sub-page-list 共享 resolveLink 四分支）：
- * - href 为 http(s):// 完整 URL → 原样保留（外部链接）
- * - href 为飞书 token → 走 resolveLink：
- *   - { path } 同组 → <a href="${path}.md">
- *   - { url }  跨组 aimUrl 可解析 → <a href="${url}">（"组合 url"）
- *   - { reason } 跨组 aimUrl 缺失 / 未就绪 → 保留原文 + warning
+ * 内部链接 href 替换(由 download-flow 传入的 resolveLink 闭包统一处理):
+ * - http(s):// 完整 URL → 原样保留(外部链接)
+ * - 路径形式(/path/to/doc.md 或 .md 结尾)→ calloutResolveLink 用当前 group aimUrl 拼绝对 URL
+ * - 飞书 token → 走 resolveLink 四分支(DB lookup + 同组 path / 跨组 url / 缺失 reason)
  *
- * 关键语义：保持 `<a>` 标签形态不转 Markdown（VitePress `:::` 容器内允许 raw HTML，
- * `<a href="...">` 用 URL 解析语义与 Markdown `[](url)` 等效，但能保留 `class` /
- * `target` 等其他属性）。
+ * 关键语义：保持 `<a>` 标签形态不转 Markdown(VitePress `:::` 容器内允许 raw HTML,
+ * `<a href="...">` 用 URL 解析语义与 Markdown `[](url)` 等效,但能保留 `class` /
+ * `target` 等其他属性)。
  */
 export function resolveCalloutBlocks(
     content: string,
@@ -117,14 +118,15 @@ export function resolveCalloutBlocks(
 
     const warnings: string[] = [];
 
-    // 块级匹配 <callout emoji="X">...</callout>,块内处理 <a href> 替换
+    // 块级匹配 <callout emoji="X">...</callout>,块内处理链接替换
     const result = content.replace(
         /<callout\s+emoji="([^"]*)">([\s\S]*?)<\/callout>/g,
         (_match, emoji: string, inner: string) => {
             const type = emojiTypeMap[emoji] ?? 'info';
 
-            // 内部 <a href="...">text</a> 链接替换(保持 <a> 标签形态,只换 href)
-            const processedInner = inner.replace(
+            // 第一步:处理飞书原生 HTML 锚点 <a href="...">text</a>
+            // (走 resolveLink 四分支,保持 <a> 标签形态只换 href)
+            const htmlLinkProcessed = inner.replace(
                 /<a\s+([^>]*?)href=(["'])([^"']*)\2([^>]*)>([\s\S]*?)<\/a>/gi,
                 (aMatch, preAttrs: string, quote: string, href: string, postAttrs: string, text: string) => {
                     // 完整 URL(http(s)://)→ 原样保留,不调 resolveLink
@@ -141,6 +143,35 @@ export function resolveCalloutBlocks(
                     // url 分支(跨组绝对 URL):原样输出
                     const newHref = 'path' in linkResult ? `${linkResult.path}.md` : linkResult.url;
                     return `<a ${preAttrs}href=${quote}${newHref}${quote}${postAttrs}>${text}</a>`;
+                }
+            );
+
+            // 第二步:处理 Markdown 链接 [text](url) → 走 resolveLink 转换
+            // 飞书 callout 内常含 <p><ul><li>[text](/path/to/doc.md)</li></ul></p> 这种
+            // HTML 块包 Markdown 链接的形态,VitePress 容器内 HTML 块不再渲染 Markdown,
+            // 必须把 [text](url) 转成 <a> 标签。
+            // URL 走 resolveLink 决策(与 <a> 共用):
+            // - http(s):// 完整 URL → 原样保留
+            // - 路径形式(/path/to/doc.md 或 .md 结尾)→ 当前 group aimUrl 拼绝对 URL
+            // - 飞书 token → DB lookup + 四分支
+            // 顺序:在 HTML <a> 处理之后,避免重复处理已转换的 <a> 标签。
+            const processedInner = htmlLinkProcessed.replace(
+                /\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g,
+                (_m, text: string, url: string) => {
+                    // http(s):// 完整 URL → 原样保留,不调 resolveLink
+                    if (/^https?:\/\//i.test(url)) {
+                        return `<a href="${url}">${text}</a>`;
+                    }
+                    // 其他形式 → 走 resolveLink(路径形式由 calloutResolveLink 包装识别)
+                    const linkResult = resolveLink(url);
+                    if ('reason' in linkResult) {
+                        warnings.push(`<callout> <md-link> ${linkResult.reason} (url=${url})`);
+                        return _m;
+                    }
+                    // path 分支(同组):追加 .md
+                    // url 分支(跨组/路径绝对 URL):原样输出
+                    const href = 'path' in linkResult ? `${linkResult.path}.md` : linkResult.url;
+                    return `<a href="${href}">${text}</a>`;
                 }
             );
 

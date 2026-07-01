@@ -855,4 +855,77 @@ describe('processDocContent — callout 内部 <a> 链接替换', () => {
         // 完整 URL 不应被改写
         expect(processedContent).not.toContain('external.md');
     });
+
+    test('callout 内 Markdown 链接路径形式 → 当前 group aimUrl 拼绝对 URL', async () => {
+        // 关键 case: 飞书 callout 内 <li>[text](/path/to/doc.md)</li> 形态
+        // VitePress ::: 容器内 HTML 块不渲染 Markdown,必须用 aimUrl 组合成可点击链接
+        writeConfig({
+            feishu: {
+                ops: { aimUrl: 'https://www.wulicode.com' }
+            }
+        });
+        const db = createTestDb();
+        const current = makeCurrentNode('ops');
+        const content = '<callout emoji="📖">'
+            + '<p>扩展阅读</p>'
+            + '<ul><li>[Nginx 配置字体 font-face 跨域](/ops/nginx/cors-font-face.md)</li></ul>'
+            + '</callout>';
+
+        const { processedContent } = await processDocContent(
+            content, '当前', '2026-04-05T00:00:00.000Z', db, current
+        );
+
+        // 路径被转成绝对 URL:https://www.wulicode.com/ops/nginx/cors-font-face.html
+        expect(processedContent).toContain('<a href="https://www.wulicode.com/ops/nginx/cors-font-face.html">Nginx 配置字体 font-face 跨域</a>');
+        // 原始 [text](url) 形态应被替换
+        expect(processedContent).not.toContain('[Nginx 配置字体 font-face 跨域](/ops/nginx/cors-font-face.md)');
+    });
+
+    test('callout 内 <a href> 路径形式 → 当前 group aimUrl 拼绝对 URL', async () => {
+        writeConfig({
+            feishu: {
+                blog: { aimUrl: 'https://blog.example.com' }
+            }
+        });
+        const db = createTestDb();
+        const current = makeCurrentNode('blog');
+        const content = '<callout emoji="💡">参考 <a href="/blog/some-post.md">同组文章</a></callout>';
+
+        const { processedContent } = await processDocContent(
+            content, '当前', '2026-04-05T00:00:00.000Z', db, current
+        );
+
+        expect(processedContent).toContain('<a href="https://blog.example.com/blog/some-post.html">同组文章</a>');
+    });
+
+    test('callout 内路径链接 current group 缺 aimUrl → 保留原文 + warning', async () => {
+        // 不配 aimUrl,calloutResolveLink 包装会返回 reason
+        writeConfig({
+            feishu: {}
+        });
+        const db = createTestDb();
+        const current = makeCurrentNode('ops');
+        const content = '<callout emoji="⚠️">参考 [path](/ops/some-doc.md) 链接</callout>';
+
+        const captured: string[] = [];
+        const origWrite = process.stdout.write.bind(process.stdout);
+        process.stdout.write = (chunk: string | Uint8Array): boolean => {
+            captured.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
+            return true;
+        };
+
+        try {
+            const { processedContent } = await processDocContent(
+                content, '当前', '2026-04-05T00:00:00.000Z', db, current
+            );
+            // 原文保留
+            expect(processedContent).toContain('[path](/ops/some-doc.md)');
+            // warning 包含 current group 缺 aimUrl
+            expect(captured.join('')).toContain('current group');
+            expect(captured.join('')).toContain('ops');
+            expect(captured.join('')).toContain('缺少 aimUrl');
+        } finally {
+            process.stdout.write = origWrite;
+        }
+    });
 });

@@ -1161,4 +1161,62 @@ describe('resolveCalloutBlocks', () => {
         expect(result).toContain('<p>查看 <a href="docs/x.md">文档</a></p>');
         expect(result).toContain('<p>或访问 <a href="https://example.com">外部</a></p>');
     });
+
+    test('HTML 块内 Markdown 链接 [text](url) → 走 resolveLink(由调用方决定组合 URL)', () => {
+        // 飞书 callout 内常含 <p><ul><li>[text](/path/to/doc.md)</li></ul></p> 这种
+        // HTML 块包 Markdown 链接的形态,VitePress 容器内 HTML 块不渲染 Markdown
+        // 路径形式 URL 由调用方(download-flow 的 calloutResolveLink 包装)识别并用
+        // 当前 group aimUrl 拼绝对 URL;此处用 stub resolveLink 模拟该行为
+        const content = '<callout emoji="📖">'
+            + '<p>扩展阅读</p>'
+            + '<ul><li>[Nginx 配置字体 font-face 跨域](/ops/nginx/cors-font-face.md)</li></ul>'
+            + '</callout>';
+        const resolveLink = (id: string): ResolveLinkResult => {
+            if (id === '/ops/nginx/cors-font-face.md') {
+                return { url: 'https://www.wulicode.com/ops/nginx/cors-font-face.html' };
+            }
+            return { reason: 'unexpected' };
+        };
+        const { result, warnings } = resolveCalloutBlocks(content, resolveLink);
+        expect(warnings).toEqual([]);
+        // Markdown 链接转 <a> 标签,href 来自 resolveLink 返回的 url
+        expect(result).toContain('<a href="https://www.wulicode.com/ops/nginx/cors-font-face.html">Nginx 配置字体 font-face 跨域</a>');
+        // 原始 [text](url) 形态应被替换
+        expect(result).not.toContain('[Nginx 配置字体 font-face 跨域](/ops/nginx/cors-font-face.md)');
+    });
+
+    test('HTML 块内 Markdown 链接 https 完整 URL 原样转 <a>', () => {
+        const content = '<callout emoji="📖">'
+            + '<p>参考 <a href="existing">现有</a> 与 [外部](https://example.com) 链接</p>'
+            + '</callout>';
+        const resolveLink = (docId: string): ResolveLinkResult => {
+            if (docId === 'existing') return { path: 'docs/existing' };
+            return { reason: 'unexpected' };
+        };
+        const { result, warnings } = resolveCalloutBlocks(content, resolveLink);
+        expect(warnings).toEqual([]);
+        // 飞书原生 <a> 走 resolveLink → <a href="docs/existing.md">
+        expect(result).toContain('<a href="docs/existing.md">现有</a>');
+        // Markdown 链接走 resolveLink,但 http(s):// 被短路,原样保留
+        expect(result).toContain('<a href="https://example.com">外部</a>');
+    });
+
+    test('HTML 块内 Markdown 链接 resolveLink 返回 reason → 保留原文 + warning', () => {
+        // 模拟 calloutResolveLink 在 current group 缺 aimUrl 时返回 reason
+        const content = '<callout emoji="📖">'
+            + '<p>参考 [path](/some/path.md) 链接</p>'
+            + '</callout>';
+        const resolveLink = (id: string): ResolveLinkResult => {
+            if (id === '/some/path.md') {
+                return { reason: 'current group "ops" 缺少 aimUrl 配置,无法解析 callout 路径链接 "/some/path.md"' };
+            }
+            return { reason: 'unexpected' };
+        };
+        const { result, warnings } = resolveCalloutBlocks(content, resolveLink);
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toContain('current group "ops" 缺少 aimUrl 配置');
+        expect(warnings[0]).toContain('url=/some/path.md');
+        // 原文保留
+        expect(result).toContain('[path](/some/path.md)');
+    });
 });

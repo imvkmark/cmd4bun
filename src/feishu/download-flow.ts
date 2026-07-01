@@ -144,9 +144,27 @@ export async function processDocContent(
 
     // 转换 <callout> 块为 VitePress ::: container 语法,内部 <a href> 走共享 resolveLink 替换
     // http(s):// 完整 URL 原样保留;飞书 token 走 makeResolveLink 四分支,保持 <a> 标签形态只换 href
+    // callout 内部链接需要识别"路径形式"(/path/to/doc.md 或 .md 结尾),
+    // 用当前节点 group 的 aimUrl 拼出绝对 URL — 这是 VitePress ::: 容器
+    // 内 HTML 块不渲染 Markdown 路径,必须用 aimUrl 组合成可点击链接。
+    // cite / sub-page 仍走 resolveLinkByObjToken 不动。
+    const calloutResolveLink = (id: string): ResolveLinkResult => {
+        // 路径形式 URL(非 http(s)://,含 / 开头或 .md 结尾)→ 当前 group aimUrl 拼绝对 URL
+        if (!/^https?:\/\//i.test(id) && (id.startsWith('/') || id.endsWith('.md'))) {
+            const aimUrl = resolveAimUrl(cfg, node.group);
+            if (!aimUrl) {
+                return { reason: `current group "${node.group}" 缺少 aimUrl 配置,无法解析 callout 路径链接 "${id}"` };
+            }
+            const stripped = id.replace(/^\/+/, '').replace(/\.md$/, '');
+            return { url: `${aimUrl.replace(/\/+$/, '')}/${stripped}.html` };
+        }
+        // 飞书 token → 走 makeResolveLink 四分支
+        return resolveLinkByObjToken(id);
+    };
+
     const { result: resolvedContent, warnings: calloutWarnings } = resolveCalloutBlocks(
         subPageResult,
-        resolveLinkByObjToken
+        calloutResolveLink
     );
     for (const w of calloutWarnings) {
         // stdout（非 stderr）：与 writeProgress 同流，避免 stdout/stderr 输出交织
