@@ -77,18 +77,33 @@ export function resolveCiteBlocks(
 }
 
 /**
- * 将飞书 <callout> 块转换为 VitePress ::: container 语法。
+ * 将飞书 <callout> 块转换为 VitePress ::: container 语法，并对内部 `<a href="...">text</a>`
+ * 链接做 href 替换（保持 `<a>` 标签形态，不转 Markdown）。
  *
  * emoji → container 类型映射：
  *   📆 → info, 💡 → tip, ✅ → tip
  *   ⚠️ → warning
  *   ❌ → danger, 🚫 → danger, 🔴 → danger
  *
- * 匹配规则：
+ * 外壳替换：
  * - <callout emoji="📆"> → ::: info 📆
- * - </callout> → :::（同时处理前置 </aside>）
+ * - </callout> → :::
+ *
+ * 内部 `<a>` 链接 href 替换（与 cite / sub-page-list 共享 resolveLink 四分支）：
+ * - href 为 http(s):// 完整 URL → 原样保留（外部链接）
+ * - href 为飞书 token → 走 resolveLink：
+ *   - { path } 同组 → <a href="${path}.md">
+ *   - { url }  跨组 aimUrl 可解析 → <a href="${url}">（"组合 url"）
+ *   - { reason } 跨组 aimUrl 缺失 / 未就绪 → 保留原文 + warning
+ *
+ * 关键语义：保持 `<a>` 标签形态不转 Markdown（VitePress `:::` 容器内允许 raw HTML，
+ * `<a href="...">` 用 URL 解析语义与 Markdown `[](url)` 等效，但能保留 `class` /
+ * `target` 等其他属性）。
  */
-export function resolveCalloutBlocks(content: string): string {
+export function resolveCalloutBlocks(
+    content: string,
+    resolveLink: (docId: string) => ResolveLinkResult
+): { result: string; warnings: string[] } {
     // emoji → VitePress container 类型映射
     const emojiTypeMap: Record<string, string> = {
         '📆': 'info',
@@ -100,19 +115,40 @@ export function resolveCalloutBlocks(content: string): string {
         '🔴': 'danger'
     };
 
-    // 替换开头 <callout emoji="..."> → ::: {type} {emoji}
-    let result = content.replace(
-        /<callout\s+emoji="([^"]*)">/g,
-        (_match, emoji: string) => {
+    const warnings: string[] = [];
+
+    // 块级匹配 <callout emoji="X">...</callout>,块内处理 <a href> 替换
+    const result = content.replace(
+        /<callout\s+emoji="([^"]*)">([\s\S]*?)<\/callout>/g,
+        (_match, emoji: string, inner: string) => {
             const type = emojiTypeMap[emoji] ?? 'info';
-            return `::: ${type} ${emoji}\n`;
+
+            // 内部 <a href="...">text</a> 链接替换(保持 <a> 标签形态,只换 href)
+            const processedInner = inner.replace(
+                /<a\s+([^>]*?)href=(["'])([^"']*)\2([^>]*)>([\s\S]*?)<\/a>/gi,
+                (aMatch, preAttrs: string, quote: string, href: string, postAttrs: string, text: string) => {
+                    // 完整 URL(http(s)://)→ 原样保留,不调 resolveLink
+                    if (/^https?:\/\//i.test(href)) {
+                        return aMatch;
+                    }
+                    // 飞书 token → 走 resolveLink 四分支
+                    const linkResult = resolveLink(href);
+                    if ('reason' in linkResult) {
+                        warnings.push(`<callout> <a> ${linkResult.reason} (href=${href})`);
+                        return aMatch;
+                    }
+                    // path 分支(同组):追加 .md
+                    // url 分支(跨组绝对 URL):原样输出
+                    const newHref = 'path' in linkResult ? `${linkResult.path}.md` : linkResult.url;
+                    return `<a ${preAttrs}href=${quote}${newHref}${quote}${postAttrs}>${text}</a>`;
+                }
+            );
+
+            return `::: ${type} ${emoji}\n${processedInner}\n:::`;
         }
     );
 
-    // 替换结尾（同时处理前置 </aside>）
-    result = result.replace(/<\/callout>/g, '\n:::');
-
-    return result;
+    return { result, warnings };
 }
 
 /**

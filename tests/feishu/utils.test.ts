@@ -1,6 +1,6 @@
 // 飞书工具函数单元测试
 import { test, expect, describe } from 'bun:test';
-import { toDatetime, extractHeadings, extractBodyPreview, formatUpdatedAt, parseAndStripFrontmatter, parseFrontmatterMeta, sanitize, xmlToReadable, parseHtmlAttrs, resolveCiteBlocks, resolveSubPageListBlocks, convertDocumentTitleToHeading } from '../../src/feishu/utils';
+import { toDatetime, extractHeadings, extractBodyPreview, formatUpdatedAt, parseAndStripFrontmatter, parseFrontmatterMeta, sanitize, xmlToReadable, parseHtmlAttrs, resolveCiteBlocks, resolveSubPageListBlocks, resolveCalloutBlocks, convertDocumentTitleToHeading } from '../../src/feishu/utils';
 import type { ResolveLinkResult } from '../../src/feishu/utils';
 
 // ============ toDatetime ============
@@ -1045,5 +1045,120 @@ describe('resolveSubPageListBlocks — resolveLink 返回 url 分支', () => {
         const { result } = resolveSubPageListBlocks(content, resolveLink);
         expect(result).toContain('- [同组](docs/local.md)');
         expect(result).toContain('- [跨组](https://blog.example.com/y.html)');
+    });
+});
+
+// ============ resolveCalloutBlocks ============
+//
+// 覆盖 8 个场景:外壳 emoji 映射 + 内部 <a> 飞书 token → 同组 path / 跨组 aimUrl url / 跨组 aimUrl 缺失 reason /
+// 未就绪 reason / 完整 URL 原样保留 / 多块独立解析 / 无 callout 时返回原内容 / 嵌套 HTML 保留
+//
+// 关键语义: 保持 <a> 标签形态不转 Markdown(同组输出 <a href="${path}.md">;跨组输出 <a href="${aimUrl}/${path}.html">)
+
+describe('resolveCalloutBlocks', () => {
+    test('外壳 emoji 映射 + 内部 <a> 飞书 token → 同组 path 追加 .md', () => {
+        const content = '<callout emoji="📆">查看 <a href="nodeToken123">相关文档</a> 了解更多</callout>';
+        const resolveLink = (docId: string): ResolveLinkResult => {
+            if (docId === 'nodeToken123') return { path: 'docs/related' };
+            return { reason: 'unexpected' };
+        };
+        const { result, warnings } = resolveCalloutBlocks(content, resolveLink);
+        expect(warnings).toEqual([]);
+        expect(result).toBe('::: info 📆\n查看 <a href="docs/related.md">相关文档</a> 了解更多\n:::');
+    });
+
+    test('跨组 aimUrl 可解析 → <a href="${aimUrl}/${human_path}.html">("组合 url")', () => {
+        const content = '<callout emoji="💡">参考 <a href="remoteToken">跨组文档</a></callout>';
+        const resolveLink = (docId: string): ResolveLinkResult => {
+            if (docId === 'remoteToken') return { url: 'https://blog.example.com/y.html' };
+            return { reason: 'unexpected' };
+        };
+        const { result, warnings } = resolveCalloutBlocks(content, resolveLink);
+        expect(warnings).toEqual([]);
+        expect(result).toBe('::: tip 💡\n参考 <a href="https://blog.example.com/y.html">跨组文档</a>\n:::');
+    });
+
+    test('跨组 aimUrl 缺失 → 保留原文 + warning', () => {
+        const content = '<callout emoji="⚠️">注意 <a href="remoteToken">跨组文档</a></callout>';
+        const resolveLink = (docId: string): ResolveLinkResult => {
+            if (docId === 'remoteToken') {
+                return { reason: 'cross-group 引用目标 group "blog" 缺少 aimUrl 配置' };
+            }
+            return { reason: 'unexpected' };
+        };
+        const { result, warnings } = resolveCalloutBlocks(content, resolveLink);
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toContain('cross-group 引用目标 group "blog" 缺少 aimUrl 配置');
+        expect(warnings[0]).toContain('href=remoteToken');
+        // 原文保留
+        expect(result).toContain('<a href="remoteToken">跨组文档</a>');
+    });
+
+    test('未就绪(human_path 缺失) → 保留原文 + warning', () => {
+        const content = '<callout emoji="📆">查看 <a href="notReadyToken">未就绪</a></callout>';
+        const resolveLink = (docId: string): ResolveLinkResult => {
+            if (docId === 'notReadyToken') return { reason: 'human_path 未设置（缺 slug）' };
+            return { reason: 'unexpected' };
+        };
+        const { result, warnings } = resolveCalloutBlocks(content, resolveLink);
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toContain('human_path 未设置（缺 slug）');
+        expect(result).toContain('<a href="notReadyToken">未就绪</a>');
+    });
+
+    test('完整 URL(http/https) 原样保留,不调 resolveLink', () => {
+        let resolveLinkCalled = false;
+        const content = '<callout emoji="❌">访问 <a href="https://example.com/external">外部链接</a> 看看</callout>';
+        const resolveLink = (): ResolveLinkResult => {
+            resolveLinkCalled = true;
+            return { reason: 'should not be called' };
+        };
+        const { result, warnings } = resolveCalloutBlocks(content, resolveLink);
+        expect(resolveLinkCalled).toBe(false);
+        expect(warnings).toEqual([]);
+        expect(result).toBe('::: danger ❌\n访问 <a href="https://example.com/external">外部链接</a> 看看\n:::');
+    });
+
+    test('多 callout 块独立解析,各自走 resolveLink', () => {
+        const content = '<callout emoji="📆">块1 <a href="token1">链接1</a></callout>'
+            + '<callout emoji="💡">块2 <a href="token2">链接2</a></callout>';
+        const calls: string[] = [];
+        const resolveLink = (docId: string): ResolveLinkResult => {
+            calls.push(docId);
+            if (docId === 'token1') return { path: 'docs/one' };
+            if (docId === 'token2') return { url: 'https://blog.example.com/two.html' };
+            return { reason: 'unexpected' };
+        };
+        const { result, warnings } = resolveCalloutBlocks(content, resolveLink);
+        expect(warnings).toEqual([]);
+        expect(calls.sort()).toEqual(['token1', 'token2']);
+        expect(result).toContain('<a href="docs/one.md">链接1</a>');
+        expect(result).toContain('<a href="https://blog.example.com/two.html">链接2</a>');
+    });
+
+    test('无 callout 时返回原内容 + 空 warnings', () => {
+        const content = '## 普通标题\n\n这是 <a href="https://example.com">外部</a> 链接。';
+        const resolveLink = (): ResolveLinkResult => ({ reason: 'should not be called' });
+        const { result, warnings } = resolveCalloutBlocks(content, resolveLink);
+        expect(warnings).toEqual([]);
+        expect(result).toBe(content);
+    });
+
+    test('嵌套 HTML(<aside>/<p>/<b> 等)原样保留', () => {
+        const content = '<callout emoji="📆">'
+            + '<aside>📅 时间：2026-07-01</aside>'
+            + '<p>查看 <a href="token">文档</a></p>'
+            + '<p>或访问 <a href="https://example.com">外部</a></p>'
+            + '</callout>';
+        const resolveLink = (docId: string): ResolveLinkResult => {
+            if (docId === 'token') return { path: 'docs/x' };
+            return { reason: 'unexpected' };
+        };
+        const { result, warnings } = resolveCalloutBlocks(content, resolveLink);
+        expect(warnings).toEqual([]);
+        // 嵌套 HTML 原样保留
+        expect(result).toContain('<aside>📅 时间：2026-07-01</aside>');
+        expect(result).toContain('<p>查看 <a href="docs/x.md">文档</a></p>');
+        expect(result).toContain('<p>或访问 <a href="https://example.com">外部</a></p>');
     });
 });

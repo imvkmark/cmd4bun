@@ -4,7 +4,7 @@
 
 import { test, expect, describe } from 'bun:test';
 import { join } from 'node:path';
-import { resolveAimDirectory, resolveAimUrl } from '../../src/feishu/aim-dir';
+import { resolveAimDirectory, resolveAimUrl, collectAllAimDirectories } from '../../src/feishu/aim-dir';
 import type { AppConfig } from '../../src/config';
 
 describe('resolveAimDirectory', () => {
@@ -140,5 +140,86 @@ describe('resolveAimUrl', () => {
             }
         };
         expect(resolveAimUrl(cfg, 'blog')).toBe('https://blog.example.com');
+    });
+});
+
+describe('collectAllAimDirectories', () => {
+    test('单 group 命中 feishu.{group}.aimDirectory', () => {
+        const cfg: AppConfig = {
+            feishu: {
+                blog: { aimDirectory: '/tmp/blog' }
+            }
+        };
+        expect(collectAllAimDirectories(cfg)).toEqual(['/tmp/blog']);
+    });
+
+    test('group 缺 aimDirectory 时 fallback 到 feishu.default.aimDirectory', () => {
+        const cfg: AppConfig = {
+            feishu: {
+                default: { aimDirectory: '/tmp/default' },
+                docs: {}
+            }
+        };
+        // docs 走 fallback → /tmp/default;default 自身 → /tmp/default;去重后单条
+        expect(collectAllAimDirectories(cfg)).toEqual(['/tmp/default']);
+    });
+
+    test('多 group 全部命中, 重复路径自动去重', () => {
+        const cfg: AppConfig = {
+            feishu: {
+                default: { aimDirectory: '/tmp/default' },
+                blog: { aimDirectory: '/tmp/blog' },
+                docs: { aimDirectory: '/tmp/docs' }
+            }
+        };
+        expect(collectAllAimDirectories(cfg)).toEqual(['/tmp/default', '/tmp/blog', '/tmp/docs']);
+    });
+
+    test('多 group 全部 fallback 到 default, 全部去重为同一条', () => {
+        const cfg: AppConfig = {
+            feishu: {
+                default: { aimDirectory: '/tmp/default' },
+                blog: {},
+                docs: {}
+            }
+        };
+        expect(collectAllAimDirectories(cfg)).toEqual(['/tmp/default']);
+    });
+
+    test('group 与 default 都缺 aimDirectory → 排除集为空', () => {
+        const cfg: AppConfig = {
+            feishu: {
+                default: {},
+                blog: {}
+            }
+        };
+        expect(collectAllAimDirectories(cfg)).toEqual([]);
+    });
+
+    test('feishu 整个未配置 → 返回空数组', () => {
+        const cfg: AppConfig = {};
+        expect(collectAllAimDirectories(cfg)).toEqual([]);
+    });
+
+    test('跳过 dir 字符串字段与 aimUrl 字符串字段', () => {
+        const cfg: AppConfig = {
+            feishu: {
+                dir: './docs/feishu',
+                // aimUrl 是字符串,typeof 不是 object,被过滤
+                default: { aimDirectory: '/tmp/default' }
+            }
+        };
+        // dir 跳过,default 命中
+        expect(collectAllAimDirectories(cfg)).toEqual(['/tmp/default']);
+    });
+
+    test('相对路径被 path.resolve 绝对化', () => {
+        const cfg: AppConfig = {
+            feishu: {
+                default: { aimDirectory: './relative/path' }
+            }
+        };
+        const result = collectAllAimDirectories(cfg);
+        expect(result).toEqual([join(process.cwd(), './relative/path')]);
     });
 });

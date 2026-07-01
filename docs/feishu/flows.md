@@ -111,8 +111,13 @@ for each space:
   ↓
 清理本地过期 Markdown:
   getAllIndexedFiles(DB)           → 索引中的非空 file_path 集合（过滤占位空字符串）
+  collectAllAimDirectories(cfg)    → 所有 group aimDirectory 绝对路径（去重）
     vs
   findMdFiles(outputDir)           → 磁盘上的所有 .md 文件
+  classifyLocalFiles(...)          → 三分类决策:
+    ├─ 不在索引中且不在 aimDirectory → 删除
+    ├─ 在 aimDirectory 子树内       → 排除(sync 不干预,由 copy-docs 管辖)
+    └─ 在索引中                      → 保留
     → 删除多余文件, 清理空目录
 ```
 
@@ -254,11 +259,15 @@ for each node in queue (并行 worker):
           ↓
         (函数顶部) loadConfig()  → cfg 供 resolveLink 闭包解析跨组 aimUrl 使用
           ↓
-        resolveCiteBlocks(cleanedContent, cb)  → <cite> → 见下方"resolveLink 四分支决策"
+        makeResolveLink(lookup)        → 内部 helper(闭包 cfg/db/node),cite/sub-page/callout 三个解析器共用
+          ├─ resolveLinkByToken    = makeResolveLink(getNode)             ← cite 用
+          └─ resolveLinkByObjToken  = makeResolveLink(getNodeByObjToken)  ← sub-page / callout 用
           ↓
-        resolveSubPageListBlocks(citeResult, cb)  → <sub-page-list> → Markdown UL(同 cite 四分支)
+        resolveCiteBlocks(cleanedContent, resolveLinkByToken)  → <cite> → 见下方"resolveLink 四分支决策"
           ↓
-        resolveCalloutBlocks(subPageResult)  → <callout> → ::: container
+        resolveSubPageListBlocks(citeResult, resolveLinkByObjToken)  → <sub-page-list> → Markdown UL(同 cite 四分支)
+          ↓
+        resolveCalloutBlocks(subPageResult, resolveLinkByObjToken)  → <callout> → ::: container + 内部 <a href> 替换(保持 <a> 标签形态)
           ↓
         Bun.write(filePath, processedContent)  → 写入 .md 文件
         ↓
@@ -276,6 +285,8 @@ for each node in queue (并行 worker):
   >
   > resolveLink 闭包内不再 bump priority(aimUrl 缺失是配置问题,human_path/upload_url 缺失同理等作者修复后下次 download 覆盖写)。
   > sub-page-list 用 obj_token 查节点 → 拿到 refNode.group 后走同一决策;与 cite 解析器行为对齐。
+  > callout 内部 <a href> 用 obj_token 查节点 → 走同一决策,但**保持 <a> 标签形态**只换 href(同组 → `<a href="${path}.md">`、跨组 → `<a href="${aimUrl}/${path}.html">`),与 cite / sub-page 输出 Markdown 不同。
+  > callout 内 http(s):// 完整 URL 原样保留,不调 resolveLink。
 ```
 
 

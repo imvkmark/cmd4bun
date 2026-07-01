@@ -26,3 +26,32 @@ export function resolveAimUrl(cfg: AppConfig, group: string): string | null {
         ?? resolveFeishuGroupConfig(cfg, 'default')?.aimUrl
         ?? null;
 }
+
+/**
+ * 收集 cfg.feishu 中所有 group（含 default fallback）的 aimDirectory 绝对路径,去重后返回。
+ *
+ * 遍历策略:
+ * - 跳过 `dir` 字段(字符串,非 group config)
+ * - 跳过非 object 值
+ * - 对每个 group 调 `resolveAimDirectory(cfg, key)` 复用其 fallback 链
+ * - 缺 `default.aimDirectory` 且 group 自身也缺时该 group 不进排除集
+ * - 缺 `cfg.feishu` 配置时返回空数组
+ * - 重复路径(多 group 共享同一 aimDirectory 或全部 fallback 到 default)自动去重
+ *
+ * 供 sync Phase 2 排除 aimDirectory 子树下的 .md 文件使用(避免 sync 误删 copy-docs 副本)。
+ * 与 resolveAimDirectory / resolveAimUrl 形成"config group 系列 helper 集中"对称。
+ */
+export function collectAllAimDirectories(cfg: AppConfig): string[] {
+    if (!cfg.feishu) return [];
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const [key, value] of Object.entries(cfg.feishu)) {
+        if (key === 'dir' || typeof value !== 'object') continue;
+        const abs = resolveAimDirectory(cfg, key);
+        if (abs && !seen.has(abs)) {
+            seen.add(abs);
+            result.push(abs);
+        }
+    }
+    return result;
+}

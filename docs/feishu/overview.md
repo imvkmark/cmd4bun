@@ -17,9 +17,9 @@
 | `feishu/download-flow.ts` | 文档下载流程：并发下载 + 断点续传（基于 updated_at），默认自动处理图片（下载/去重/上传 OSS/URL 替换/节点级 diff）+ 末尾全局孤儿兜底 |
 | `feishu/copy-docs-flow.ts` | 已下载文档复制：按 group 分发到 `feishu.{group}.aimDirectory`，目标文件名 `human_path.md` |
 | `feishu/diff-with-flow.ts` | 目标目录孤儿副本检测：按 `human_path` 反查 DB，列出两类孤儿（只读） |
-| `feishu/aim-dir.ts` | `aimDirectory` / `aimUrl` 解析共享 helper：按 group 名 → fallback 到 default，copy-docs、diff-with、download(跨组引用解析)共用 |
+| `feishu/aim-dir.ts` | `aimDirectory` / `aimUrl` 解析共享 helper：按 group 名 → fallback 到 default，copy-docs、diff-with、download(跨组引用解析)共用；`collectAllAimDirectories` 收集所有 group aimDirectory 绝对路径给 sync Phase 2 排除 |
 | `feishu/images.ts` | 图片处理核心：URL 提取、下载、MD5 去重、OSS 上传、Markdown 链接替换、全局孤儿扫描 |
-| `feishu/utils.ts` | 工具函数：Shell 封装、XML→文本转换、文件遍历、限流器、进度输出、时间格式化、Markdown 标题提取与正文预览 |
+| `feishu/utils.ts` | 工具函数：Shell 封装、XML→文本转换、文件遍历、限流器、进度输出、时间格式化、Markdown 标题提取与正文预览；飞书 wiki 块转换（`<cite>` → Markdown 链接、`<sub-page-list>` → Markdown UL、`<callout>` → VitePress `:::` container + 内部 `<a>` href 替换保持 `<a>` 标签形态） |
 | `feishu/migrations/` | 数据库迁移 SQL 文件（001_initial.sql ~ 010_split_images.sql） |
 | `config.ts` | XDG 配置文件加载（config.json）、token 解析、飞书目录解析、aimUrl 配置 |
 | `shared/colors.ts` | ANSI 终端颜色常量 |

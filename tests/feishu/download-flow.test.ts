@@ -660,3 +660,199 @@ describe('processDocContent — 跨 group 引用解析', () => {
         expect(processedContent).not.toContain('https://');
     });
 });
+
+// ============ processDocContent callout 内部 <a> 链接替换 ============
+//
+// 覆盖 4 个场景:callout 内 <a> 同 group / 跨组 aimUrl / 跨组 aimUrl 缺失 / 完整 URL 原样
+// 验证 makeResolveLink 共享闭包被 callout 解析器复用,保持 <a> 标签形态只换 href
+
+describe('processDocContent — callout 内部 <a> 链接替换', () => {
+    let tempDir: string;
+    let prevXdg: string | undefined;
+
+    function createTestDb(): Database {
+        const db = new Database(':memory:');
+        db.run(`
+            CREATE TABLE nodes (
+                node_token TEXT PRIMARY KEY,
+                space_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                obj_token TEXT NOT NULL,
+                obj_type TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                updated_at TEXT,
+                updated_at_last_synced_at TEXT,
+                parent_node_token,
+                downloaded_at TEXT,
+                scanned_at TEXT,
+                human_path TEXT,
+                description TEXT,
+                priority INTEGER DEFAULT 0,
+                is_ignore INTEGER DEFAULT 0,
+                upload_url TEXT,
+                "group" TEXT NOT NULL DEFAULT 'default'
+            )
+        `);
+        return db;
+    }
+
+    function insertNode(db: Database, node: Partial<DBNode> & { node_token: string; obj_token: string }): void {
+        db.run(
+            `INSERT INTO nodes (
+                node_token, space_id, title, obj_token, obj_type, file_path,
+                updated_at, updated_at_last_synced_at, parent_node_token,
+                downloaded_at, scanned_at, human_path, description,
+                priority, is_ignore, upload_url, "group"
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                node.node_token, node.space_id ?? 's1', node.title ?? node.node_token,
+                node.obj_token, node.obj_type ?? 'docx', node.file_path ?? '',
+                node.updated_at ?? '2026-04-05T00:00:00.000Z',
+                node.updated_at_last_synced_at ?? null, node.parent_node_token ?? '',
+                node.downloaded_at ?? '2026-04-05T00:00:00.000Z', node.scanned_at ?? null,
+                node.human_path ?? null, node.description ?? 'test desc',
+                node.priority ?? 0, node.is_ignore ?? 0, node.upload_url ?? null,
+                node.group ?? 'default'
+            ]
+        );
+    }
+
+    beforeEach(() => {
+        tempDir = mkdtempSync(join(tmpdir(), 'feishu-test-cfg-'));
+        mkdirSync(join(tempDir, 'cmd4bun'), { recursive: true });
+        prevXdg = process.env.XDG_CONFIG_HOME;
+        process.env.XDG_CONFIG_HOME = tempDir;
+    });
+
+    afterEach(() => {
+        if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+        else process.env.XDG_CONFIG_HOME = prevXdg;
+        rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    function writeConfig(cfg: unknown): void {
+        writeFileSync(join(tempDir, 'cmd4bun', 'config.json'), JSON.stringify(cfg));
+    }
+
+    function makeCurrentNode(group: string, overrides: Partial<DBNode> = {}): DBNode {
+        return makeMockNode({
+            node_token: 'current',
+            obj_token: 'obj-current',
+            obj_type: 'docx',
+            human_path: 'current-page',
+            description: 'current desc',
+            group,
+            file_path: 'blog/current.md',
+            ...overrides
+        });
+    }
+
+    test('callout 内 <a> 同 group → <a href="${path}.md">', async () => {
+        writeConfig({
+            feishu: {
+                blog: { aimUrl: 'https://blog.example.com' },
+                docs: { aimUrl: 'https://docs.example.com' }
+            }
+        });
+        const db = createTestDb();
+        const current = makeCurrentNode('blog');
+        insertNode(db, {
+            node_token: 'co-same',
+            obj_token: 'co-same-obj',
+            obj_type: 'docx',
+            human_path: 'same-page',
+            group: 'blog'
+        });
+        const content = '<callout emoji="📆">查看 <a href="co-same-obj">同组</a></callout>';
+
+        const { processedContent } = await processDocContent(
+            content, '当前', '2026-04-05T00:00:00.000Z', db, current
+        );
+
+        // 保持 <a> 标签形态,只换 href
+        expect(processedContent).toContain('<a href="same-page.md">同组</a>');
+        expect(processedContent).not.toContain('https://');
+    });
+
+    test('callout 内 <a> 跨 group + aimUrl → <a href="${aimUrl}/${path}.html">', async () => {
+        writeConfig({
+            feishu: {
+                blog: { aimUrl: 'https://blog.example.com' },
+                docs: { aimUrl: 'https://docs.example.com' }
+            }
+        });
+        const db = createTestDb();
+        const current = makeCurrentNode('blog');
+        insertNode(db, {
+            node_token: 'co-cross',
+            obj_token: 'co-cross-obj',
+            obj_type: 'docx',
+            human_path: 'cross-page',
+            group: 'docs'
+        });
+        const content = '<callout emoji="💡">参考 <a href="co-cross-obj">跨组</a></callout>';
+
+        const { processedContent } = await processDocContent(
+            content, '当前', '2026-04-05T00:00:00.000Z', db, current
+        );
+
+        expect(processedContent).toContain('<a href="https://docs.example.com/cross-page.html">跨组</a>');
+        expect(processedContent).not.toContain('cross-page.md');
+    });
+
+    test('callout 内 <a> 跨 group + aimUrl 缺失 → 保留原文 + warning', async () => {
+        // blog 配 aimUrl,docs 没配 → 跨组引用走 reason 失败路径
+        writeConfig({
+            feishu: {
+                blog: { aimUrl: 'https://blog.example.com' }
+            }
+        });
+        const db = createTestDb();
+        const current = makeCurrentNode('blog');
+        insertNode(db, {
+            node_token: 'co-noaim',
+            obj_token: 'co-noaim-obj',
+            obj_type: 'docx',
+            human_path: 'orphan-page',
+            group: 'docs'
+        });
+        const content = '<callout emoji="⚠️">注意 <a href="co-noaim-obj">孤儿</a></callout>';
+
+        const captured: string[] = [];
+        const origWrite = process.stdout.write.bind(process.stdout);
+        process.stdout.write = (chunk: string | Uint8Array): boolean => {
+            captured.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
+            return true;
+        };
+
+        try {
+            const { processedContent } = await processDocContent(
+                content, '当前', '2026-04-05T00:00:00.000Z', db, current
+            );
+            // 原文保留
+            expect(processedContent).toContain('<a href="co-noaim-obj">孤儿</a>');
+            expect(processedContent).not.toContain('orphan-page.md');
+            // warning 包含跨组 aimUrl 缺失 + href
+            expect(captured.join('')).toContain('cross-group');
+            expect(captured.join('')).toContain('docs');
+            expect(captured.join('')).toContain('缺少 aimUrl');
+            expect(captured.join('')).toContain('href=co-noaim-obj');
+        } finally {
+            process.stdout.write = origWrite;
+        }
+    });
+
+    test('callout 内 <a> 完整 URL(http/https) 原样保留', async () => {
+        const db = createTestDb();
+        const current = makeCurrentNode('blog');
+        const content = '<callout emoji="❌">访问 <a href="https://example.com/external">外部</a></callout>';
+
+        const { processedContent } = await processDocContent(
+            content, '当前', '2026-04-05T00:00:00.000Z', db, current
+        );
+
+        expect(processedContent).toContain('<a href="https://example.com/external">外部</a>');
+        // 完整 URL 不应被改写
+        expect(processedContent).not.toContain('external.md');
+    });
+});

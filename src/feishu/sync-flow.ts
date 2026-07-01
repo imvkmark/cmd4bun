@@ -1,6 +1,6 @@
 // 飞书索引同步流程 (cmd.feishu sync)
 
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { mkdirSync, existsSync, rmSync } from 'node:fs';
 import { C } from '../shared/colors';
 import { writeProgress, sanitize, findMdFiles, cleanupEmptyDirs, execJSON } from './utils';
@@ -11,7 +11,38 @@ import {
 import { cleanupOrphanImages } from './images';
 import { fetchSpaces, fetchAllNodes, FETCHABLE_TYPES, buildPath, type WikiNode } from './api';
 import { loadConfig, buildOssConfig } from '../config';
+import { collectAllAimDirectories } from './aim-dir';
 import type { SyncArgs } from '../feishu';
+
+/**
+ * Phase 2 清理逻辑:对一组磁盘 .md 文件,按"是否在索引中"和"是否在 aimDirectory 子树内"分类。
+ * - 不在索引中且不在 aimDirectory 子树内 → 标记删除
+ * - 在 aimDirectory 子树内(命中绝对路径或以 aim+sep 为前缀)→ 标记排除(由 copy-docs 管辖)
+ * - 在索引中 → 保留
+ *
+ * 抽出为纯函数供测试,避免 mock 整个 runSync。返回相对 outputDir 的路径。
+ */
+export function classifyLocalFiles(
+    localMdFiles: string[],
+    outputDir: string,
+    indexedFiles: Set<string>,
+    aimDirs: string[]
+): { toRemove: string[]; excludedByAim: string[] } {
+    const toRemove: string[] = [];
+    const excludedByAim: string[] = [];
+    for (const mdFile of localMdFiles) {
+        // 命中任一 aimDirectory(等于该路径或在其子树内) → 排除
+        if (aimDirs.some(aim => mdFile === aim || mdFile.startsWith(aim + sep))) {
+            excludedByAim.push(relative(outputDir, mdFile));
+            continue;
+        }
+        const relPath = relative(outputDir, mdFile);
+        if (!indexedFiles.has(relPath)) {
+            toRemove.push(relPath);
+        }
+    }
+    return { toRemove, excludedByAim };
+}
 
 /**
  * 按 obj_type 分组统计节点计数，格式化为紧凑展示字符串。
@@ -229,21 +260,30 @@ export async function runSync(args: SyncArgs) {
 
     const indexedFiles = getAllIndexedFiles(db);
 
-    let removedCount = 0;
-    const removedFiles: string[] = [];
-    const localMdFiles = findMdFiles(outputDir);
-    for (const mdFile of localMdFiles) {
-        const relPath = relative(outputDir, mdFile);
-        if (!indexedFiles.has(relPath)) {
-            rmSync(mdFile);
-            removedFiles.push(relPath);
-            removedCount++;
-        }
+    // 收集所有 group 的 aimDirectory 绝对路径;sync 不会删除这些子树下的 .md 文件
+    // (归 copy-docs 阶段管辖,与 sync 的 source 端清理职责隔离)
+    const aimDirs = collectAllAimDirectories(cfg);
+
+    // Phase 2 决策(纯函数):不进入 IO,便于测试
+    const { toRemove, excludedByAim: excludedByAimFiles } = classifyLocalFiles(
+        findMdFiles(outputDir), outputDir, indexedFiles, aimDirs
+    );
+
+    // 执行删除
+    for (const relPath of toRemove) {
+        rmSync(join(outputDir, relPath));
     }
     cleanupEmptyDirs(outputDir);
 
+    const removedCount = toRemove.length;
+    const removedFiles = toRemove;
+    const excludedByAimCount = excludedByAimFiles.length;
+
     console.log(`  ${C.bold}索引完成${C.reset}\n`);
     console.log(`  ${C.green}✓${C.reset} 索引已更新  ${C.yellow}−${C.reset} 删除: ${removedCount}`);
+    if (excludedByAimCount > 0) {
+        console.log(`  ${C.green}✓${C.reset} aimDirectory 排除: ${excludedByAimCount}`);
+    }
 
     if (removedFiles.length > 0) {
         console.log(`\n  ${C.dim}已删除:${C.reset}`);
@@ -267,6 +307,13 @@ export async function runSync(args: SyncArgs) {
             }
         } catch (e) {
             console.log(`  ${C.yellow}⚠${C.reset} 图片清理异常: ${e instanceof Error ? e.message : String(e)}`);
+        }
+    }
+
+    if (excludedByAimFiles.length > 0) {
+        console.log(`\n  ${C.dim}已排除 aimDirectory (归 copy-docs 管辖, sync 不干预):${C.reset}`);
+        for (const f of excludedByAimFiles) {
+            console.log(`    ${C.dim}○${C.reset} ${f}`);
         }
     }
 

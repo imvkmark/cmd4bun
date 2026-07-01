@@ -66,7 +66,7 @@ export async function processDocContent(
 
     // 解析 <cite> 引用块为 Markdown 链接（独立于 slug，即使无 slug 的文档也需解析引用）
     //
-    // resolveLink 决策(四分支):
+    // resolveLink 决策(四分支)由 makeResolveLink 闭包统一处理:
     // - sheet/file + upload_url → { url } (绝对 URL,跨组/同组都不变)
     // - docx + human_path + 同组(refNode.group === node.group) → { path } (相对路径,同 aimDirectory 下有效)
     // - docx + human_path + 跨组 + aimUrl 可解析 → { url } (绝对 URL,跨 aimDirectory 也能跳转)
@@ -77,36 +77,49 @@ export async function processDocContent(
     // 让被引节点排到下载队列前面。但 aimUrl 缺失是配置问题,重下无法自动修复;
     // human_path 缺失同理(只能等作者补 slug 后下次 download 覆盖写)。
     // 因此跨任务(cross-group-link)统一取消所有 bump,失败路径仅靠下次 download 重试覆盖写。
-    const citeResolveLink = (docId: string): ResolveLinkResult => {
-        const refNode = getNode(db, docId);
-        if (refNode === null) return { reason: 'doc-id 未在索引中找到，请先运行 sync' };
-        if ((refNode.obj_type === 'sheet' || refNode.obj_type === 'file') && refNode.upload_url !== null) {
-            return { url: refNode.upload_url };
-        }
-        if (refNode.obj_type === 'docx' && refNode.human_path !== null) {
-            if (refNode.group === node.group) {
-                return { path: refNode.human_path };
+    //
+    // makeResolveLink 抽到本函数内部 helper:cite / sub-page / callout 三个解析器共用同一份决策逻辑,
+    // 差异仅在 lookup 函数(wiki node_token vs obj_token)。与 cross-group-link / sub-page-list-block 闭环。
+    const makeResolveLink = (
+        lookup: (db: Database, id: string) => DBNode | null
+    ): ((id: string) => ResolveLinkResult) => {
+        return (id: string): ResolveLinkResult => {
+            const refNode = lookup(db, id);
+            if (refNode === null) return { reason: 'doc-id 未在索引中找到，请先运行 sync' };
+            if ((refNode.obj_type === 'sheet' || refNode.obj_type === 'file') && refNode.upload_url !== null) {
+                return { url: refNode.upload_url };
             }
-            // 跨组:尝试解析被引方所在 group 的 aimUrl
-            const aimUrl = resolveAimUrl(cfg, refNode.group);
-            if (aimUrl) {
+            if (refNode.obj_type === 'docx' && refNode.human_path !== null) {
+                if (refNode.group === node.group) {
+                    return { path: refNode.human_path };
+                }
+                // 跨组:尝试解析被引方所在 group 的 aimUrl
+                const aimUrl = resolveAimUrl(cfg, refNode.group);
+                if (aimUrl) {
+                    return {
+                        url: `${aimUrl.replace(/\/+$/, '')}/${refNode.human_path.replace(/^\/+/, '')}.html`
+                    };
+                }
                 return {
-                    url: `${aimUrl.replace(/\/+$/, '')}/${refNode.human_path.replace(/^\/+/, '')}.html`
+                    reason: `cross-group 引用目标 group "${refNode.group}" 缺少 aimUrl 配置`
                 };
             }
             return {
-                reason: `cross-group 引用目标 group "${refNode.group}" 缺少 aimUrl 配置`
+                reason: refNode.obj_type === 'docx'
+                    ? 'human_path 未设置（缺 slug）'
+                    : 'upload_url 未就绪'
             };
-        }
-        return {
-            reason: refNode.obj_type === 'docx'
-                ? 'human_path 未设置（缺 slug）'
-                : 'upload_url 未就绪'
         };
     };
+
+    // cite 用 node_token 反查; sub-page / callout 都用 obj_token 反查
+    // (callout 内部 <a href> 视为飞书 obj_token,与 sub-page 块级同源 HTML 同构)
+    const resolveLinkByToken = makeResolveLink(getNode);
+    const resolveLinkByObjToken = makeResolveLink(getNodeByObjToken);
+
     const { result: citeResult, warnings } = resolveCiteBlocks(
         cleanedContent,
-        citeResolveLink
+        resolveLinkByToken
     );
     for (const w of warnings) {
         // stdout（非 stderr）：与 writeProgress 同流，避免 stdout/stderr 输出交织
@@ -118,35 +131,9 @@ export async function processDocContent(
     // 解析 <sub-page-list> 块为 Markdown 无序列表（独立于 slug）
     // 与 cite 解析器共用相同的"同组 path / 跨组 url / 配置缺失 reason / 未就绪 reason"决策。
     // lookup key 不同:sub-page doc-id 是飞书文档对象的全局 ID(obj_token),而 cite doc-id 是 wiki 树节点 ID(node_token)。
-    const subPageResolveLink = (objToken: string): ResolveLinkResult => {
-        const refNode = getNodeByObjToken(db, objToken);
-        if (refNode === null) return { reason: 'doc-id 未在索引中找到，请先运行 sync' };
-        if ((refNode.obj_type === 'sheet' || refNode.obj_type === 'file') && refNode.upload_url !== null) {
-            return { url: refNode.upload_url };
-        }
-        if (refNode.obj_type === 'docx' && refNode.human_path !== null) {
-            if (refNode.group === node.group) {
-                return { path: refNode.human_path };
-            }
-            const aimUrl = resolveAimUrl(cfg, refNode.group);
-            if (aimUrl) {
-                return {
-                    url: `${aimUrl.replace(/\/+$/, '')}/${refNode.human_path.replace(/^\/+/, '')}.html`
-                };
-            }
-            return {
-                reason: `cross-group 引用目标 group "${refNode.group}" 缺少 aimUrl 配置`
-            };
-        }
-        return {
-            reason: refNode.obj_type === 'docx'
-                ? 'human_path 未设置（缺 slug）'
-                : 'upload_url 未就绪'
-        };
-    };
     const { result: subPageResult, warnings: subPageWarnings } = resolveSubPageListBlocks(
         citeResult,
-        subPageResolveLink
+        resolveLinkByObjToken
     );
     for (const w of subPageWarnings) {
         // stdout（非 stderr）：与 writeProgress 同流，避免 stdout/stderr 输出交织
@@ -155,8 +142,18 @@ export async function processDocContent(
     // 统计 sub-page 中因节点缺失/未就绪导致未解析的数量
     unresolvedRefCount += subPageWarnings.filter((w) => w.includes('引用解析失败')).length;
 
-    // 转换 <callout> 块为 VitePress ::: container 语法
-    const resolvedContent = resolveCalloutBlocks(subPageResult);
+    // 转换 <callout> 块为 VitePress ::: container 语法,内部 <a href> 走共享 resolveLink 替换
+    // http(s):// 完整 URL 原样保留;飞书 token 走 makeResolveLink 四分支,保持 <a> 标签形态只换 href
+    const { result: resolvedContent, warnings: calloutWarnings } = resolveCalloutBlocks(
+        subPageResult,
+        resolveLinkByObjToken
+    );
+    for (const w of calloutWarnings) {
+        // stdout（非 stderr）：与 writeProgress 同流，避免 stdout/stderr 输出交织
+        process.stdout.write(`\n  ${C.yellow}⚠${C.reset} ${w}\n`);
+    }
+    // 统计 callout 中因节点缺失/未就绪导致未解析的数量
+    unresolvedRefCount += calloutWarnings.filter((w) => w.includes('引用解析失败')).length;
 
     if (!slug) {
         return { slug: null, processedContent: resolvedContent, unresolvedRefCount };
